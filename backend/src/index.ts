@@ -1,23 +1,10 @@
-import express from "express";
-import cors from "cors";
 import dotenv from "dotenv";
-import router from "./routes";
+import { createApp } from "./app";
 
 dotenv.config();
 
-const app = express();
+const app = createApp();
 const PORT = process.env.PORT || 4000;
-
-app.use(cors());
-app.use(express.json());
-
-// Register API routes
-app.use("/api", router);
-
-// Default Route
-app.get("/", (req, res) => {
-  res.send("Stellar Private Equity Platform Backend is running.");
-});
 
 app.listen(PORT, () => {
   console.log(`=================================================`);
