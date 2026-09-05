@@ -1,20 +1,13 @@
-# Dependencies
-node_modules/
-
-frontend/.env.local
-
-# Build
-dist/
-.next/
-out/
+# Rust / Soroban
+target/
+contracts/target/
+*.wasm
+**/*.rs.bk
 
 # Environment
 .env
 .env.local
 .env.*.local
-
-# Debug
-npm-debug.log*
 
 # IDE
 .vscode/
@@ -26,15 +19,6 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Rust / Soroban
-contracts/target/
-*.wasm
-
-# Test
-coverage/
-
+# Agent tooling
 .agents
 .codex
-.vscode
-.vercel
-.env*.local
