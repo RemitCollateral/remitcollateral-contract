@@ -34,6 +34,7 @@ pub enum Error {
     NotOverdue = 11,
     GraceNotExpired = 12,
     Overpayment = 13,
+    UnknownPartner = 14,
 }
 
 #[contracttype]
@@ -56,6 +57,8 @@ pub struct Loan {
     pub guarantor: Address,
     /// Off-chain handle for the beneficiary; never a wallet address.
     pub beneficiary: BytesN<32>,
+    /// The off-ramp partner servicing this loan. Only it may attest repayments.
+    pub partner: Address,
     pub principal_usd: i128,
     /// Loan-to-value applied at origination, in basis points (15000 = 150%).
     pub ltv_bps: u32,
@@ -160,8 +163,8 @@ impl LoanLedgerContract {
             .set(&DataKey::LiquidationEngine, &engine);
     }
 
-    /// Authorize or revoke an off-ramp partner. Only an authorized partner may
-    /// attest that a repayment happened.
+    /// Authorize or revoke an off-ramp partner. A partner may attest only for
+    /// loans it services, and only while it remains authorized.
     pub fn set_partner(env: Env, admin: Address, partner: Address, authorized: bool) {
         Self::require_admin(&env, &admin);
         env.storage()
@@ -189,6 +192,23 @@ impl LoanLedgerContract {
             .set(&DataKey::Reputation(beneficiary), &score_bps);
     }
 
+    /// Move an open loan to a different partner, for when the servicing
+    /// partner is offboarded. The new partner must already be authorized.
+    pub fn reassign_partner(env: Env, admin: Address, loan_id: u64, new_partner: Address) {
+        Self::require_admin(&env, &admin);
+        if !Self::is_partner(env.clone(), new_partner.clone()) {
+            panic_with_error!(&env, Error::UnknownPartner);
+        }
+        let mut loan = Self::loan_of(&env, loan_id);
+        if !matches!(loan.status, LoanStatus::Active | LoanStatus::Grace) {
+            panic_with_error!(&env, Error::LoanNotActive);
+        }
+        loan.partner = new_partner;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan);
+    }
+
     // --- Origination ---
 
     /// The LTV a given beneficiary currently qualifies for. A perfect reputation
@@ -203,10 +223,15 @@ impl LoanLedgerContract {
 
     /// Open a loan. Locks `principal * ltv` of the guarantor's collateral before
     /// the off-ramp partner is instructed to disburse local currency.
+    ///
+    /// The loan is bound to `partner`, the off-ramp partner that will disburse
+    /// and collect it. Binding limits what a single compromised partner key can
+    /// do to the loans that partner actually services.
     pub fn originate(
         env: Env,
         guarantor: Address,
         beneficiary: BytesN<32>,
+        partner: Address,
         principal_usd: i128,
         installment_count: u32,
         interval_secs: u64,
@@ -217,6 +242,9 @@ impl LoanLedgerContract {
         }
         if installment_count == 0 || interval_secs == 0 {
             panic_with_error!(&env, Error::InvalidSchedule);
+        }
+        if !Self::is_partner(env.clone(), partner.clone()) {
+            panic_with_error!(&env, Error::UnknownPartner);
         }
 
         // One live loan per guarantor-beneficiary pair at a time.
@@ -243,6 +271,7 @@ impl LoanLedgerContract {
             id,
             guarantor: guarantor.clone(),
             beneficiary: beneficiary.clone(),
+            partner,
             principal_usd,
             ltv_bps,
             collateral_locked: collateral,
@@ -276,14 +305,17 @@ impl LoanLedgerContract {
     /// ```
     pub fn attest_repayment(env: Env, partner: Address, loan_id: u64, amount_usd: i128) -> i128 {
         partner.require_auth();
-        if !Self::is_partner(env.clone(), partner) {
-            panic_with_error!(&env, Error::NotAuthorized);
-        }
         if amount_usd <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
 
         let mut loan = Self::loan_of(&env, loan_id);
+        // Only the partner servicing this loan may attest for it, and only while
+        // it is still authorized. A registered partner cannot release collateral
+        // on another partner's loans.
+        if partner != loan.partner || !Self::is_partner(env.clone(), partner) {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
         if !matches!(loan.status, LoanStatus::Active | LoanStatus::Grace) {
             panic_with_error!(&env, Error::LoanNotActive);
         }

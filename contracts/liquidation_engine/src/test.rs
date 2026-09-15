@@ -73,9 +73,14 @@ fn setup<'a>() -> Setup<'a> {
 #[test]
 fn test_full_default_to_liquidation() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
     // 150% LTV → 15_000 locked. One installment paid → 3_562 released, 11_438 left.
     s.ledger.attest_repayment(&s.partner, &id, &2_500);
 
@@ -119,9 +124,14 @@ fn test_full_default_to_liquidation() {
 fn test_default_with_no_repayments_seizes_only_the_principal() {
     let s = setup();
     let beneficiary = BytesN::from_array(&s.env, &[5u8; 32]);
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &beneficiary, &10_000, &1, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &beneficiary,
+        &s.partner,
+        &10_000,
+        &1,
+        &(30 * DAY),
+    );
     assert_eq!(s.ledger.get_loan(&id).unwrap().collateral_locked, 15_000);
 
     // Default with nothing repaid: outstanding 10_000 < locked 15_000.
@@ -139,9 +149,14 @@ fn test_default_with_no_repayments_seizes_only_the_principal() {
 #[test]
 fn test_cranks_are_permissionless_but_state_driven() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     // Anyone can call the crank; the loan's own state decides what happens.
     s.env.ledger().set_timestamp(31 * DAY);

@@ -97,9 +97,14 @@ fn test_ltv_follows_reputation() {
 fn test_origination_locks_collateral_at_the_required_ltv() {
     let s = setup();
 
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
     assert_eq!(id, 1);
 
     let loan = s.ledger.get_loan(&id).unwrap();
@@ -116,7 +121,14 @@ fn test_origination_locks_collateral_at_the_required_ltv() {
     // One live loan per guarantor-beneficiary pair.
     assert!(s
         .ledger
-        .try_originate(&s.guarantor, &s.beneficiary, &1_000, &2, &(30 * DAY))
+        .try_originate(
+            &s.guarantor,
+            &s.beneficiary,
+            &s.partner,
+            &1_000,
+            &2,
+            &(30 * DAY)
+        )
         .is_err());
 
     // A better reputation locks less collateral for the same principal.
@@ -124,16 +136,21 @@ fn test_origination_locks_collateral_at_the_required_ltv() {
     s.ledger.set_reputation(&s.oracle, &other, &10_000);
     let id2 = s
         .ledger
-        .originate(&s.guarantor, &other, &10_000, &4, &(30 * DAY));
+        .originate(&s.guarantor, &other, &s.partner, &10_000, &4, &(30 * DAY));
     assert_eq!(s.ledger.get_loan(&id2).unwrap().collateral_locked, 11_000);
 }
 
 #[test]
 fn test_repayment_releases_collateral_proportionally() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     // First installment: 25% repaid → 25% of collateral earned, less the 5% buffer.
     // 15_000 * 2_500/10_000 = 3_750; 3_750 * 95% = 3_562
@@ -170,9 +187,14 @@ fn test_repayment_releases_collateral_proportionally() {
 #[test]
 fn test_only_authorized_partners_can_attest() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     let impostor = Address::generate(&s.env);
     assert!(s
@@ -207,9 +229,14 @@ fn test_only_authorized_partners_can_attest() {
 #[test]
 fn test_grace_period_transitions() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     // Not yet due.
     assert!(!s.ledger.is_overdue(&id));
@@ -243,9 +270,14 @@ fn test_grace_period_transitions() {
 #[test]
 fn test_default_closes_the_loan() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
     s.ledger.attest_repayment(&s.partner, &id, &2_500);
 
     s.env.ledger().set_timestamp(61 * DAY);
@@ -278,9 +310,14 @@ fn test_default_closes_the_loan() {
 #[test]
 fn test_token_attestations_cannot_close_a_loan() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     // A partner submitting one attestation per scheduled installment, each for a
     // trivial amount, must not close the loan or free the collateral. Only
@@ -314,9 +351,14 @@ fn test_token_attestations_cannot_close_a_loan() {
 #[test]
 fn test_token_payments_cannot_defer_default() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     // A 1-unit payment just before every due date used to push the due date
     // forward a full interval each time, so the loan could never be liquidated.
@@ -339,9 +381,14 @@ fn test_token_payments_cannot_defer_default() {
 #[test]
 fn test_partial_payment_during_grace_keeps_the_deadline() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     s.env.ledger().set_timestamp(31 * DAY);
     s.ledger.mark_grace(&s.engine, &id);
@@ -360,9 +407,14 @@ fn test_partial_payment_during_grace_keeps_the_deadline() {
 
     // Catching up on the missed installment would have ended it.
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
     s.env.ledger().set_timestamp(31 * DAY);
     s.ledger.mark_grace(&s.engine, &id);
     s.ledger.attest_repayment(&s.partner, &id, &2_500);
@@ -374,9 +426,14 @@ fn test_partial_payment_during_grace_keeps_the_deadline() {
 #[test]
 fn test_prepayment_advances_the_schedule() {
     let s = setup();
-    let id = s
-        .ledger
-        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
 
     // Paying two installments at once covers two, so the next due date is the third.
     s.ledger.attest_repayment(&s.partner, &id, &5_000);
@@ -389,4 +446,59 @@ fn test_prepayment_advances_the_schedule() {
     let loan = s.ledger.get_loan(&id).unwrap();
     assert_eq!(loan.installments_paid, 2);
     assert_eq!(loan.next_due, 90 * DAY);
+}
+
+#[test]
+fn test_only_the_loans_own_partner_can_attest() {
+    let s = setup();
+    let other_partner = Address::generate(&s.env);
+    s.ledger.set_partner(&s.admin, &other_partner, &true);
+
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
+    assert_eq!(s.ledger.get_loan(&id).unwrap().partner, s.partner);
+
+    // Another registered partner cannot attest for a loan it does not service.
+    assert!(s
+        .ledger
+        .try_attest_repayment(&other_partner, &id, &2_500)
+        .is_err());
+
+    // A loan cannot be bound to a partner that is not registered.
+    let unknown = Address::generate(&s.env);
+    let other_beneficiary = BytesN::from_array(&s.env, &[8u8; 32]);
+    assert!(s
+        .ledger
+        .try_originate(
+            &s.guarantor,
+            &other_beneficiary,
+            &unknown,
+            &1_000,
+            &2,
+            &(30 * DAY)
+        )
+        .is_err());
+
+    // Reassignment moves the right to attest, and only the admin may do it.
+    assert!(s
+        .ledger
+        .try_reassign_partner(&s.guarantor, &id, &other_partner)
+        .is_err());
+    assert!(s
+        .ledger
+        .try_reassign_partner(&s.admin, &id, &unknown)
+        .is_err());
+    s.ledger.reassign_partner(&s.admin, &id, &other_partner);
+    assert!(s
+        .ledger
+        .try_attest_repayment(&s.partner, &id, &2_500)
+        .is_err());
+    s.ledger.attest_repayment(&other_partner, &id, &2_500);
+    assert_eq!(s.ledger.get_loan(&id).unwrap().total_repaid_usd, 2_500);
 }
