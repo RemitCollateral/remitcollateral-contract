@@ -1178,7 +1178,7 @@
                         "symbol": "installments_paid"
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 4
                       }
                     },
                     {
@@ -1202,7 +1202,15 @@
                         "symbol": "next_due"
                       },
                       "val": {
-                        "u64": 12960000
+                        "u64": 2592000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "originated_at"
+                      },
+                      "val": {
+                        "u64": 0
                       }
                     },
                     {

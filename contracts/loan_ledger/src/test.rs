@@ -292,7 +292,9 @@ fn test_token_attestations_cannot_close_a_loan() {
     let loan = s.ledger.get_loan(&id).unwrap();
     assert!(matches!(loan.status, LoanStatus::Active));
     assert_eq!(loan.total_repaid_usd, 4);
-    assert_eq!(loan.installments_paid, 4);
+    // Four attestations cover no installment, so the schedule has not moved.
+    assert_eq!(loan.installments_paid, 0);
+    assert_eq!(loan.next_due, 30 * DAY);
     // 4 of 10_000 repaid earns essentially nothing back.
     assert_eq!(loan.collateral_released, 5);
     assert_eq!(s.vault.get_locked(&s.guarantor), 15_000 - 5);
@@ -307,4 +309,84 @@ fn test_token_attestations_cannot_close_a_loan() {
     assert!(matches!(loan.status, LoanStatus::Repaid));
     assert_eq!(loan.collateral_released, 15_000);
     assert_eq!(s.vault.get_locked(&s.guarantor), 0);
+}
+
+#[test]
+fn test_token_payments_cannot_defer_default() {
+    let s = setup();
+    let id = s
+        .ledger
+        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+
+    // A 1-unit payment just before every due date used to push the due date
+    // forward a full interval each time, so the loan could never be liquidated.
+    for _ in 0..12 {
+        let due = s.ledger.get_loan(&id).unwrap().next_due;
+        s.env.ledger().set_timestamp(due - 1);
+        s.ledger.attest_repayment(&s.partner, &id, &1);
+    }
+
+    // The schedule is anchored to principal repaid: 12 of 10_000 covers no
+    // installment, so the first installment is still the one due.
+    let loan = s.ledger.get_loan(&id).unwrap();
+    assert_eq!(loan.installments_paid, 0);
+    assert_eq!(loan.next_due, 30 * DAY);
+
+    s.env.ledger().set_timestamp(30 * DAY + 1);
+    assert!(s.ledger.is_overdue(&id));
+}
+
+#[test]
+fn test_partial_payment_during_grace_keeps_the_deadline() {
+    let s = setup();
+    let id = s
+        .ledger
+        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+
+    s.env.ledger().set_timestamp(31 * DAY);
+    s.ledger.mark_grace(&s.engine, &id);
+    let deadline = s.ledger.get_loan(&id).unwrap().grace_expires_at;
+    assert_eq!(deadline, 45 * DAY);
+
+    // A payment that leaves the loan behind does not end grace or restart it.
+    s.env.ledger().set_timestamp(40 * DAY);
+    s.ledger.attest_repayment(&s.partner, &id, &100);
+    let loan = s.ledger.get_loan(&id).unwrap();
+    assert!(matches!(loan.status, LoanStatus::Grace));
+    assert_eq!(loan.grace_expires_at, deadline);
+
+    s.env.ledger().set_timestamp(deadline + 1);
+    assert!(s.ledger.is_grace_expired(&id));
+
+    // Catching up on the missed installment would have ended it.
+    let s = setup();
+    let id = s
+        .ledger
+        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+    s.env.ledger().set_timestamp(31 * DAY);
+    s.ledger.mark_grace(&s.engine, &id);
+    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    let loan = s.ledger.get_loan(&id).unwrap();
+    assert!(matches!(loan.status, LoanStatus::Active));
+    assert_eq!(loan.grace_expires_at, 0);
+}
+
+#[test]
+fn test_prepayment_advances_the_schedule() {
+    let s = setup();
+    let id = s
+        .ledger
+        .originate(&s.guarantor, &s.beneficiary, &10_000, &4, &(30 * DAY));
+
+    // Paying two installments at once covers two, so the next due date is the third.
+    s.ledger.attest_repayment(&s.partner, &id, &5_000);
+    let loan = s.ledger.get_loan(&id).unwrap();
+    assert_eq!(loan.installments_paid, 2);
+    assert_eq!(loan.next_due, 90 * DAY);
+
+    // A payment short of a full installment covers nothing extra.
+    s.ledger.attest_repayment(&s.partner, &id, &2_499);
+    let loan = s.ledger.get_loan(&id).unwrap();
+    assert_eq!(loan.installments_paid, 2);
+    assert_eq!(loan.next_due, 90 * DAY);
 }

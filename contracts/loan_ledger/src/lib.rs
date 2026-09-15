@@ -64,6 +64,10 @@ pub struct Loan {
     pub installment_count: u32,
     pub installment_amount: i128,
     pub interval_secs: u64,
+    /// Ledger time the loan was opened. Every due date is derived from it.
+    pub originated_at: u64,
+    /// Installments fully covered by principal repaid. Derived from money, never
+    /// from how many attestations have arrived.
     pub installments_paid: u32,
     pub total_repaid_usd: i128,
     pub next_due: u64,
@@ -234,6 +238,7 @@ impl LoanLedgerContract {
         let id = count + 1;
         env.storage().instance().set(&DataKey::LoanCount, &id);
 
+        let now = env.ledger().timestamp();
         let loan = Loan {
             id,
             guarantor: guarantor.clone(),
@@ -245,9 +250,10 @@ impl LoanLedgerContract {
             installment_count,
             installment_amount: principal_usd / installment_count as i128,
             interval_secs,
+            originated_at: now,
             installments_paid: 0,
             total_repaid_usd: 0,
-            next_due: env.ledger().timestamp() + interval_secs,
+            next_due: now + interval_secs,
             grace_expires_at: 0,
             status: LoanStatus::Active,
         };
@@ -286,7 +292,7 @@ impl LoanLedgerContract {
         }
 
         loan.total_repaid_usd += amount_usd;
-        loan.installments_paid += 1;
+        loan.installments_paid = Self::installments_covered(&loan);
 
         // Closing is decided by principal actually repaid, never by how many
         // attestations have arrived. Counting attestations would let a partner
@@ -321,10 +327,19 @@ impl LoanLedgerContract {
                 loan.beneficiary.clone(),
             ));
         } else {
-            // A payment clears any grace period and advances the schedule.
-            loan.status = LoanStatus::Active;
-            loan.grace_expires_at = 0;
-            loan.next_due += loan.interval_secs;
+            // The next due date is the first installment not yet covered by
+            // principal repaid. Advancing it per attestation instead would let
+            // token payments push the due date forward forever.
+            loan.next_due =
+                loan.originated_at + (loan.installments_paid as u64 + 1) * loan.interval_secs;
+
+            // Grace ends only if this payment brings the loan current. A
+            // partial payment that leaves it behind keeps the original
+            // deadline, so small payments cannot restart the grace clock.
+            if env.ledger().timestamp() <= loan.next_due {
+                loan.status = LoanStatus::Active;
+                loan.grace_expires_at = 0;
+            }
         }
 
         env.storage()
@@ -460,6 +475,11 @@ impl LoanLedgerContract {
     }
 
     // --- Internals ---
+
+    /// Installments fully covered by principal repaid so far.
+    fn installments_covered(loan: &Loan) -> u32 {
+        (loan.total_repaid_usd * loan.installment_count as i128 / loan.principal_usd) as u32
+    }
 
     fn config(env: &Env) -> Config {
         env.storage()
