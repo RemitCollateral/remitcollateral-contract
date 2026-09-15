@@ -8,6 +8,7 @@ use soroban_sdk::{
 };
 
 const DAY: u64 = 86_400;
+const TIMELOCK: u64 = 2 * DAY;
 
 struct Setup<'a> {
     env: Env,
@@ -40,7 +41,7 @@ fn setup<'a>() -> Setup<'a> {
 
     let vault_id = env.register(
         GuarantorVaultContract,
-        (admin.clone(), sac.address(), settlement.clone()),
+        (admin.clone(), sac.address(), settlement.clone(), TIMELOCK),
     );
     let vault = GuarantorVaultContractClient::new(&env, &vault_id);
 
@@ -50,10 +51,13 @@ fn setup<'a>() -> Setup<'a> {
         (
             admin.clone(),
             vault_id.clone(),
-            15_000u32,
-            11_000u32,
-            500u32,
-            14 * DAY,
+            Config {
+                base_ltv_bps: 15_000,
+                min_ltv_bps: 11_000,
+                safety_buffer_bps: 500,
+                grace_period_secs: 14 * DAY,
+            },
+            TIMELOCK,
         ),
     );
     let ledger = LoanLedgerContractClient::new(&env, &ledger_id);
@@ -540,7 +544,17 @@ fn test_constructor_rejects_invalid_config() {
     // A floor above the base LTV is nonsensical; the deploy itself must fail.
     env.register(
         LoanLedgerContract,
-        (admin, vault, 11_000u32, 15_000u32, 500u32, 14 * DAY),
+        (
+            admin,
+            vault,
+            Config {
+                base_ltv_bps: 11_000,
+                min_ltv_bps: 15_000,
+                safety_buffer_bps: 500,
+                grace_period_secs: 14 * DAY,
+            },
+            TIMELOCK,
+        ),
     );
 }
 
@@ -585,34 +599,6 @@ fn test_loan_lifetime_is_extended_by_use_and_by_the_crank() {
     // be liquidated.
     s.ledger.is_overdue(&id);
     assert_eq!(persistent_ttl(&s, &loan_key), EXTEND_TO);
-}
-
-#[test]
-fn test_upgrade_and_admin_handover_are_admin_only() {
-    let s = setup();
-    let stranger = Address::generate(&s.env);
-    let new_admin = Address::generate(&s.env);
-    let hash = BytesN::from_array(&s.env, &[0u8; 32]);
-    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
-
-    assert!(matches!(
-        s.ledger.try_upgrade(&stranger, &hash),
-        Err(Ok(e)) if e == not_authorized
-    ));
-
-    s.ledger.propose_admin(&s.admin, &new_admin);
-    assert_eq!(s.ledger.get_admin(), s.admin);
-    assert!(s.ledger.try_accept_admin(&stranger).is_err());
-    s.ledger.accept_admin(&new_admin);
-    assert_eq!(s.ledger.get_admin(), new_admin);
-
-    let partner = Address::generate(&s.env);
-    assert!(matches!(
-        s.ledger.try_set_partner(&s.admin, &partner, &true),
-        Err(Ok(e)) if e == not_authorized
-    ));
-    s.ledger.set_partner(&new_admin, &partner, &true);
-    assert!(s.ledger.is_partner(&partner));
 }
 
 #[test]
@@ -672,4 +658,75 @@ fn test_attestations_need_the_partner_and_an_independent_verifier() {
         .try_attest_repayment(&s.partner, &s.verifier, &id, &100)
         .is_err());
     assert_eq!(s.ledger.get_loan(&id).unwrap().total_repaid_usd, 2_500);
+}
+
+#[test]
+fn test_upgrades_wait_out_the_timelock() {
+    let s = setup();
+    let admin = s.ledger.get_admin();
+    let stranger = Address::generate(&s.env);
+    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
+    let too_early = soroban_sdk::Error::from(Error::TimelockNotExpired);
+    let upgrade = Action::Upgrade(BytesN::from_array(&s.env, &[0u8; 32]));
+    assert_eq!(s.ledger.get_timelock_secs(), TIMELOCK);
+
+    assert!(matches!(
+        s.ledger.try_schedule_action(&stranger, &upgrade),
+        Err(Ok(e)) if e == not_authorized
+    ));
+    s.ledger.schedule_action(&admin, &upgrade);
+    let eta = s.ledger.get_scheduled_action().unwrap().eta;
+    assert_eq!(eta, s.env.ledger().timestamp() + TIMELOCK);
+
+    // Refused as too early while the timelock runs.
+    s.env.ledger().set_timestamp(eta - 1);
+    assert!(matches!(
+        s.ledger.try_execute_action(&admin),
+        Err(Ok(e)) if e == too_early
+    ));
+
+    // Once it has elapsed the timelock no longer blocks it. (The host then
+    // rejects this placeholder hash, which was never uploaded; a real upgrade
+    // is exercised end to end by scripts/smoke-testnet.sh.)
+    s.env.ledger().set_timestamp(eta);
+    assert!(!matches!(
+        s.ledger.try_execute_action(&admin),
+        Err(Ok(e)) if e == too_early
+    ));
+
+    s.ledger.cancel_action(&admin);
+    assert!(s.ledger.get_scheduled_action().is_none());
+}
+
+#[test]
+fn test_admin_handover_is_two_step() {
+    let s = setup();
+    let admin = s.ledger.get_admin();
+    let stranger = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
+    let upgrade = Action::Upgrade(BytesN::from_array(&s.env, &[0u8; 32]));
+
+    s.ledger.propose_admin(&admin, &new_admin);
+    assert_eq!(s.ledger.get_admin(), admin);
+    assert!(s.ledger.try_accept_admin(&stranger).is_err());
+    s.ledger.accept_admin(&new_admin);
+    assert_eq!(s.ledger.get_admin(), new_admin);
+
+    assert!(matches!(
+        s.ledger.try_schedule_action(&admin, &upgrade),
+        Err(Ok(e)) if e == not_authorized
+    ));
+    s.ledger.schedule_action(&new_admin, &upgrade);
+}
+
+#[test]
+fn test_engine_wiring_is_set_once() {
+    let s = setup();
+    let stranger = Address::generate(&s.env);
+    // A different engine could default loans at will, so it cannot be swapped.
+    assert!(s
+        .ledger
+        .try_set_liquidation_engine(&s.admin, &stranger)
+        .is_err());
 }

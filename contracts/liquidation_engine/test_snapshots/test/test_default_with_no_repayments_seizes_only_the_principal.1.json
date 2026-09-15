@@ -800,6 +800,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "TimelockSecs"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 172800
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "UsdcToken"
                             }
                           ]
@@ -1229,6 +1241,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "TimelockSecs"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 172800
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Vault"
                             }
                           ]
@@ -1292,6 +1316,18 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TimelockSecs"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 172800
                         }
                       },
                       {

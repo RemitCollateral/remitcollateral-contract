@@ -2,13 +2,14 @@
 
 use super::*;
 use rc_guarantor_vault::{GuarantorVaultContract, GuarantorVaultContractClient};
-use rc_loan_ledger::{LoanLedgerContract, LoanLedgerContractClient, LoanStatus};
+use rc_loan_ledger::{Config, LoanLedgerContract, LoanLedgerContractClient, LoanStatus};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     token, BytesN, Env,
 };
 
 const DAY: u64 = 86_400;
+const TIMELOCK: u64 = 2 * DAY;
 
 struct Setup<'a> {
     env: Env,
@@ -41,7 +42,7 @@ fn setup<'a>() -> Setup<'a> {
 
     let vault_id = env.register(
         GuarantorVaultContract,
-        (admin.clone(), sac.address(), settlement.clone()),
+        (admin.clone(), sac.address(), settlement.clone(), TIMELOCK),
     );
     let vault = GuarantorVaultContractClient::new(&env, &vault_id);
 
@@ -51,17 +52,20 @@ fn setup<'a>() -> Setup<'a> {
         (
             admin.clone(),
             vault_id.clone(),
-            15_000u32,
-            11_000u32,
-            500u32,
-            14 * DAY,
+            Config {
+                base_ltv_bps: 15_000,
+                min_ltv_bps: 11_000,
+                safety_buffer_bps: 500,
+                grace_period_secs: 14 * DAY,
+            },
+            TIMELOCK,
         ),
     );
     let ledger = LoanLedgerContractClient::new(&env, &ledger_id);
 
     let engine_id = env.register(
         LiquidationEngineContract,
-        (admin.clone(), vault_id.clone(), ledger_id.clone()),
+        (admin.clone(), vault_id.clone(), ledger_id.clone(), TIMELOCK),
     );
     let engine = LiquidationEngineContractClient::new(&env, &engine_id);
 
@@ -195,18 +199,51 @@ fn test_cranks_are_permissionless_but_state_driven() {
 }
 
 #[test]
-fn test_upgrade_and_admin_handover_are_admin_only() {
+fn test_upgrades_wait_out_the_timelock() {
+    let s = setup();
+    let admin = s.engine.get_admin();
+    let stranger = Address::generate(&s.env);
+    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
+    let too_early = soroban_sdk::Error::from(Error::TimelockNotExpired);
+    let upgrade = Action::Upgrade(BytesN::from_array(&s.env, &[0u8; 32]));
+    assert_eq!(s.engine.get_timelock_secs(), TIMELOCK);
+
+    assert!(matches!(
+        s.engine.try_schedule_action(&stranger, &upgrade),
+        Err(Ok(e)) if e == not_authorized
+    ));
+    s.engine.schedule_action(&admin, &upgrade);
+    let eta = s.engine.get_scheduled_action().unwrap().eta;
+    assert_eq!(eta, s.env.ledger().timestamp() + TIMELOCK);
+
+    // Refused as too early while the timelock runs.
+    s.env.ledger().set_timestamp(eta - 1);
+    assert!(matches!(
+        s.engine.try_execute_action(&admin),
+        Err(Ok(e)) if e == too_early
+    ));
+
+    // Once it has elapsed the timelock no longer blocks it. (The host then
+    // rejects this placeholder hash, which was never uploaded; a real upgrade
+    // is exercised end to end by scripts/smoke-testnet.sh.)
+    s.env.ledger().set_timestamp(eta);
+    assert!(!matches!(
+        s.engine.try_execute_action(&admin),
+        Err(Ok(e)) if e == too_early
+    ));
+
+    s.engine.cancel_action(&admin);
+    assert!(s.engine.get_scheduled_action().is_none());
+}
+
+#[test]
+fn test_admin_handover_is_two_step() {
     let s = setup();
     let admin = s.engine.get_admin();
     let stranger = Address::generate(&s.env);
     let new_admin = Address::generate(&s.env);
-    let hash = BytesN::from_array(&s.env, &[0u8; 32]);
     let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
-
-    assert!(matches!(
-        s.engine.try_upgrade(&stranger, &hash),
-        Err(Ok(e)) if e == not_authorized
-    ));
+    let upgrade = Action::Upgrade(BytesN::from_array(&s.env, &[0u8; 32]));
 
     s.engine.propose_admin(&admin, &new_admin);
     assert_eq!(s.engine.get_admin(), admin);
@@ -215,7 +252,8 @@ fn test_upgrade_and_admin_handover_are_admin_only() {
     assert_eq!(s.engine.get_admin(), new_admin);
 
     assert!(matches!(
-        s.engine.try_propose_admin(&admin, &stranger),
+        s.engine.try_schedule_action(&admin, &upgrade),
         Err(Ok(e)) if e == not_authorized
     ));
+    s.engine.schedule_action(&new_admin, &upgrade);
 }

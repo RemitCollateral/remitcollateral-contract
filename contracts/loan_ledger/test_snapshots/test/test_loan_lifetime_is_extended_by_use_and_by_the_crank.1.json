@@ -800,6 +800,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "TimelockSecs"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 172800
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "UsdcToken"
                             }
                           ]
@@ -1274,6 +1286,18 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TimelockSecs"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 172800
                         }
                       },
                       {

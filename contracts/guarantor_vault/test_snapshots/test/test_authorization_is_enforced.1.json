@@ -564,6 +564,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "TimelockSecs"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 172800
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "UsdcToken"
                             }
                           ]

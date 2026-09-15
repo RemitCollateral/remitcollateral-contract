@@ -34,6 +34,10 @@ pub enum Error {
     InsufficientLocked = 6,
     LedgerNotSet = 7,
     EngineNotSet = 8,
+    AlreadySet = 9,
+    NoPendingAction = 10,
+    ActionPending = 11,
+    TimelockNotExpired = 12,
 }
 
 /// A single guarantor's collateral position.
@@ -57,6 +61,26 @@ pub enum DataKey {
     LiquidationEngine,
     Vault(Address),
     PendingAdmin,
+    TimelockSecs,
+    Scheduled,
+}
+
+/// A sensitive admin change that must wait out the timelock before it runs.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Action {
+    /// Replace the contract's code, keeping its address and storage.
+    Upgrade(BytesN<32>),
+    /// Change where forfeited collateral is sent.
+    SetSettlement(Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduledAction {
+    pub action: Action,
+    /// Earliest ledger time at which the action may execute.
+    pub eta: u64,
 }
 
 #[contract]
@@ -72,9 +96,13 @@ impl GuarantorVaultContract {
         admin: Address,
         usdc_token: Address,
         settlement_address: Address,
+        timelock_secs: u64,
     ) {
         Self::extend_instance(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::TimelockSecs, &timelock_secs);
         env.storage()
             .instance()
             .set(&DataKey::UsdcToken, &usdc_token);
@@ -85,38 +113,97 @@ impl GuarantorVaultContract {
 
     // --- Administration ---
 
-    /// Register the LoanLedger contract, the only caller allowed to lock collateral.
+    /// Register the LoanLedger contract, the only caller allowed to lock
+    /// collateral. Can be set only once.
     pub fn set_loan_ledger(env: Env, admin: Address, ledger: Address) {
         Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
+        // Set once, at setup. Rewiring later would let the admin point the vault
+        // at a contract that seizes collateral, so it goes through an upgrade
+        // and its timelock instead.
+        if env.storage().instance().has(&DataKey::LoanLedger) {
+            panic_with_error!(&env, Error::AlreadySet);
+        }
         env.storage().instance().set(&DataKey::LoanLedger, &ledger);
     }
 
-    /// Register the LiquidationEngine contract, the only caller allowed to forfeit collateral.
+    /// Register the LiquidationEngine contract, the only caller allowed to
+    /// forfeit collateral. Can be set only once.
     pub fn set_liquidation_engine(env: Env, admin: Address, engine: Address) {
         Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
+        if env.storage().instance().has(&DataKey::LiquidationEngine) {
+            panic_with_error!(&env, Error::AlreadySet);
+        }
         env.storage()
             .instance()
             .set(&DataKey::LiquidationEngine, &engine);
     }
 
-    /// Change where forfeited collateral is sent.
-    pub fn set_settlement_address(env: Env, admin: Address, settlement_address: Address) {
+    /// Schedule an upgrade or a change of settlement address. It can execute only once the timelock set at deployment
+    /// has elapsed, and can be cancelled at any time before that, so guarantors
+    /// and the admin's other signers see every such change coming.
+    pub fn schedule_action(env: Env, admin: Address, action: Action) {
         Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
+        if env.storage().instance().has(&DataKey::Scheduled) {
+            panic_with_error!(&env, Error::ActionPending);
+        }
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TimelockSecs)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        let scheduled = ScheduledAction {
+            action,
+            eta: env.ledger().timestamp() + delay,
+        };
         env.storage()
             .instance()
-            .set(&DataKey::SettlementAddress, &settlement_address);
+            .set(&DataKey::Scheduled, &scheduled);
     }
 
-    /// Replace this contract's code while keeping its address and storage, so
-    /// a bug found after launch can be fixed without migrating live loans or
-    /// locked collateral. Admin only. The new wasm must already be uploaded.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
-        Self::require_admin(&env, &admin);
+    /// Carry out the scheduled action once its timelock has elapsed.
+    pub fn execute_action(env: Env, admin: Address) {
         Self::extend_instance(&env);
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::require_admin(&env, &admin);
+        let scheduled: ScheduledAction = env
+            .storage()
+            .instance()
+            .get(&DataKey::Scheduled)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAction));
+        if env.ledger().timestamp() < scheduled.eta {
+            panic_with_error!(&env, Error::TimelockNotExpired);
+        }
+        env.storage().instance().remove(&DataKey::Scheduled);
+        match scheduled.action {
+            Action::Upgrade(wasm_hash) => env.deployer().update_current_contract_wasm(wasm_hash),
+            Action::SetSettlement(settlement) => env
+                .storage()
+                .instance()
+                .set(&DataKey::SettlementAddress, &settlement),
+        }
+    }
+
+    /// Withdraw the scheduled action before it executes.
+    pub fn cancel_action(env: Env, admin: Address) {
+        Self::extend_instance(&env);
+        Self::require_admin(&env, &admin);
+        if !env.storage().instance().has(&DataKey::Scheduled) {
+            panic_with_error!(&env, Error::NoPendingAction);
+        }
+        env.storage().instance().remove(&DataKey::Scheduled);
+    }
+
+    pub fn get_scheduled_action(env: Env) -> Option<ScheduledAction> {
+        env.storage().instance().get(&DataKey::Scheduled)
+    }
+
+    pub fn get_timelock_secs(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TimelockSecs)
+            .unwrap_or(0)
     }
 
     /// Begin handing the admin role to `new_admin`. Nothing changes until the

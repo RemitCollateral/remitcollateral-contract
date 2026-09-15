@@ -9,6 +9,8 @@ use soroban_sdk::{
     token, BytesN, Env,
 };
 
+const TIMELOCK: u64 = 172_800;
+
 struct Setup<'a> {
     env: Env,
     vault: GuarantorVaultContractClient<'a>,
@@ -36,7 +38,7 @@ fn setup<'a>() -> Setup<'a> {
 
     let id = env.register(
         GuarantorVaultContract,
-        (admin.clone(), sac.address(), settlement.clone()),
+        (admin.clone(), sac.address(), settlement.clone(), TIMELOCK),
     );
     let vault = GuarantorVaultContractClient::new(&env, &id);
     vault.set_loan_ledger(&admin, &ledger);
@@ -167,7 +169,7 @@ fn test_authorization_is_enforced() {
     assert!(s.vault.try_set_loan_ledger(&stranger, &stranger).is_err());
     assert!(s
         .vault
-        .try_set_settlement_address(&stranger, &stranger)
+        .try_schedule_action(&stranger, &Action::SetSettlement(stranger.clone()))
         .is_err());
 }
 
@@ -216,35 +218,89 @@ fn test_vault_lifetime_is_extended_on_use() {
 }
 
 #[test]
-fn test_upgrade_and_admin_handover_are_admin_only() {
+fn test_wiring_is_set_once() {
+    let s = setup();
+    // Setup already wired the vault. It cannot be pointed anywhere else.
+    assert!(s.vault.try_set_loan_ledger(&s.admin, &s.engine).is_err());
+    assert!(s
+        .vault
+        .try_set_liquidation_engine(&s.admin, &s.ledger)
+        .is_err());
+    assert_eq!(s.vault.get_loan_ledger(), Some(s.ledger.clone()));
+    assert_eq!(s.vault.get_liquidation_engine(), Some(s.engine.clone()));
+}
+
+#[test]
+fn test_sensitive_changes_wait_out_the_timelock() {
+    let s = setup();
+    let stranger = Address::generate(&s.env);
+    let new_settlement = Address::generate(&s.env);
+    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
+    let too_early = soroban_sdk::Error::from(Error::TimelockNotExpired);
+    assert_eq!(s.vault.get_timelock_secs(), TIMELOCK);
+
+    // Only the admin may schedule, and scheduling changes nothing yet.
+    assert!(matches!(
+        s.vault
+            .try_schedule_action(&stranger, &Action::SetSettlement(stranger.clone())),
+        Err(Ok(e)) if e == not_authorized
+    ));
+    s.vault
+        .schedule_action(&s.admin, &Action::SetSettlement(new_settlement.clone()));
+    assert_eq!(s.vault.get_settlement_address(), s.settlement);
+    assert_eq!(s.vault.get_scheduled_action().unwrap().eta, TIMELOCK);
+
+    // One change at a time.
+    assert!(s
+        .vault
+        .try_schedule_action(&s.admin, &Action::SetSettlement(stranger.clone()))
+        .is_err());
+
+    // It cannot run early...
+    s.env.ledger().set_timestamp(TIMELOCK - 1);
+    assert!(matches!(
+        s.vault.try_execute_action(&s.admin),
+        Err(Ok(e)) if e == too_early
+    ));
+    assert_eq!(s.vault.get_settlement_address(), s.settlement);
+
+    // ...and runs once the delay has passed.
+    s.env.ledger().set_timestamp(TIMELOCK);
+    s.vault.execute_action(&s.admin);
+    assert_eq!(s.vault.get_settlement_address(), new_settlement);
+    assert!(s.vault.get_scheduled_action().is_none());
+
+    // A scheduled upgrade can be cancelled before it runs.
+    s.vault.schedule_action(
+        &s.admin,
+        &Action::Upgrade(BytesN::from_array(&s.env, &[0u8; 32])),
+    );
+    s.vault.cancel_action(&s.admin);
+    assert!(s.vault.get_scheduled_action().is_none());
+    assert!(s.vault.try_execute_action(&s.admin).is_err());
+}
+
+#[test]
+fn test_admin_handover_is_two_step() {
     let s = setup();
     let stranger = Address::generate(&s.env);
     let new_admin = Address::generate(&s.env);
-    let hash = BytesN::from_array(&s.env, &[0u8; 32]);
     let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
 
-    // Only the admin may replace the code, and it is refused as unauthorized,
-    // not merely because the hash was never uploaded.
-    assert!(matches!(
-        s.vault.try_upgrade(&stranger, &hash),
-        Err(Ok(e)) if e == not_authorized
-    ));
     assert!(s.vault.try_propose_admin(&stranger, &new_admin).is_err());
-
-    // Handover is two-step: proposing changes nothing on its own.
     s.vault.propose_admin(&s.admin, &new_admin);
     assert_eq!(s.vault.get_admin(), s.admin);
     assert!(s.vault.try_accept_admin(&stranger).is_err());
-
     s.vault.accept_admin(&new_admin);
     assert_eq!(s.vault.get_admin(), new_admin);
 
     // The old admin loses its powers; the new one has them.
+    let action = Action::SetSettlement(stranger.clone());
     assert!(matches!(
-        s.vault.try_set_loan_ledger(&s.admin, &stranger),
+        s.vault.try_schedule_action(&s.admin, &action),
         Err(Ok(e)) if e == not_authorized
     ));
-    s.vault.set_loan_ledger(&new_admin, &s.ledger);
+    s.vault.schedule_action(&new_admin, &action);
     // A completed handover cannot be replayed.
     assert!(s.vault.try_accept_admin(&new_admin).is_err());
 }
