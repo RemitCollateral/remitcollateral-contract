@@ -1,0 +1,9 @@
+{
+  "name": "remitcollateral-contract-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Helpers for multi-party transactions against the RemitCollateral contracts",
+  "dependencies": {
+    "@stellar/stellar-sdk": "^17.1.0"
+  }
+}

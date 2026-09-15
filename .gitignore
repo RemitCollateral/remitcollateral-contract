@@ -22,3 +22,6 @@ Thumbs.db
 # Agent tooling
 .agents
 .codex
+
+# Script dependencies
+node_modules/
