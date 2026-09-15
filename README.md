@@ -18,7 +18,7 @@ This repository holds the **Soroban smart contracts only** — the settlement la
 
 1. **Collateral.** The guarantor deposits USDC into their own vault. Nothing is pooled.
 2. **Origination.** The guarantor opens a loan and names the registered off-ramp partner that will disburse and collect it. The ledger computes the required LTV from the beneficiary's reputation — 150% by default, down to a 110% floor for a well-established relationship — and locks that multiple of the principal in the vault. The backend then instructs the off-ramp partner to disburse local currency.
-3. **Repayment.** The beneficiary repays in local currency through their normal channel. The loan's own partner attests to each repayment on-chain, and the ledger releases collateral in proportion to principal repaid, less a safety buffer held back until the loan closes. The schedule advances only by installments actually covered by principal repaid, however many attestations arrive.
+3. **Repayment.** The beneficiary repays in local currency through their normal channel. The loan's own partner and an independent verifier co-sign each repayment attestation on-chain, and the ledger releases collateral in proportion to principal repaid, less a safety buffer held back until the loan closes. The schedule advances only by installments actually covered by principal repaid, however many attestations arrive.
 4. **Closing.** The final attested installment returns all remaining collateral, buffer included.
 5. **Default.** If an installment is missed, anyone can crank the loan into its grace period. A partial payment that leaves the loan behind does not end or restart grace. If grace expires unpaid, liquidation forfeits collateral equal to the **outstanding balance only** and returns the rest to the guarantor.
 
@@ -28,16 +28,17 @@ The beneficiary has no wallet and never appears as an `Address`. They are identi
 
 ### Trust boundary
 
-Repayments happen in local currency through a licensed partner, so the chain cannot observe them directly. The protocol accepts a repayment only when the partner servicing that loan authorizes the attestation — never on the beneficiary's or the guarantor's word, and never from a different partner, even a registered one. Partner registration is admin-controlled and revocable, revocation takes effect on the next invocation, and the admin can move an open loan to another registered partner when one is offboarded.
+Repayments happen in local currency through a licensed partner, so the chain cannot observe them directly. The protocol accepts a repayment only when two parties sign the same attestation: the partner servicing that loan, which collected the money, and a registered verifier — in practice the platform's backend, which checks each partner report before co-signing. It never accepts a repayment on the beneficiary's or the guarantor's word, from a different partner, or on either signature alone. A verifier can never also be a partner, so no single key holds both halves. Partners and verifiers are registered and revoked by the admin, revocation takes effect on the next invocation, and the admin can move an open loan to another registered partner when one is offboarded.
 
 ## Roles
 
 | Role | Held by | May |
 |------|---------|-----|
 | **Guarantor** | Stellar wallet | Deposit, withdraw unlocked collateral, originate loans against their own vault |
-| **Off-ramp partner** | Registered address | Attest repayments on the loans it services |
+| **Off-ramp partner** | Registered address | Co-sign repayment attestations on the loans it services |
+| **Verifier** | Registered address, never also a partner | Co-sign every repayment attestation after checking it |
 | **Oracle** | Registered address | Publish beneficiary reputation scores |
-| **Admin** | Stellar wallet | Wire the contracts together, register and revoke partners, reassign a loan's partner, set the oracle and settlement address, upgrade contract code, hand the admin role over |
+| **Admin** | Multisig account (2-of-3 on testnet) | Wire the contracts together once, register and revoke partners and verifiers, reassign a loan's partner, set the oracle, schedule upgrades and settlement changes behind the timelock, hand the admin role over |
 | **Anyone** | — | Run the liquidation cranks; what they do is fixed by loan state |
 
 ## Stack
@@ -89,61 +90,86 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## Deployment
 
-Each contract takes its configuration through a constructor that runs inside its own deploy transaction, so there is no window between deployment and setup in which someone else could claim the admin role. What cannot go into a constructor is the wiring between contracts that do not exist yet, so deployment is: deploy in dependency order, then wire.
-
-`scripts/deploy.sh` does both:
+Each contract takes its configuration through a constructor that runs inside its own deploy transaction, so there is no window between deployment and setup in which someone else could claim the admin role. The wiring between contracts that do not exist yet at construction time is set once, straight afterwards, and can never be changed except by a timelocked upgrade.
 
 ```bash
 USDC=<settlement asset contract id> \
 PARTNER=<first off-ramp partner address> \
+VERIFIER=<repayment verifier address> \
 ORACLE=<reputation oracle address> \
-./scripts/deploy.sh            # NETWORK defaults to testnet; ADMIN to the rc-admin identity
+./scripts/deploy.sh      # NETWORK defaults to testnet, TIMELOCK_SECS to 48 hours
 ```
 
-It deploys the vault, the ledger (production defaults: 150% base LTV, 110% floor, 5% safety buffer, 14-day grace) and the engine, then runs the wiring. Run all of it: until the vault knows the ledger, origination cannot lock collateral, and until it knows the engine, liquidation cannot forfeit. It refuses to target mainnet unless `CONFIRM_MAINNET=yes` is set.
+`deploy.sh` deploys the vault, the ledger (production defaults: 150% base LTV, 110% floor, 5% safety buffer, 14-day grace) and the engine, then runs the one-time wiring and registers the first partner and verifier. It refuses to target mainnet unless `CONFIRM_MAINNET=yes` is set. The deploying key is only the first admin: hand the role to a multisig straight away (see below). Set `SETTLEMENT` to that multisig as well, so forfeited collateral never lands in a single-key account.
 
-`scripts/smoke-testnet.sh` then exercises a live deployment end to end — deposit, origination, a registered partner refused on a loan it does not service, proportional release, an overdue loan cranked into grace, full repayment, a code upgrade that keeps the vault's balances, and withdrawal through the upgraded code.
+`scripts/smoke-testnet.sh` then exercises a live deployment end to end, and passes against the current testnet code: deposit and origination; the partner alone, the verifier alone, and a different co-signed partner all refused; a co-signed repayment releasing collateral; an overdue loan cranked into grace; full repayment; the admin role moved to the council, with the old key refused; a single council signature refused; an upgrade that cannot run before its timelock, then runs once the council executes it, with the vault's balances intact; and a withdrawal through the upgraded code.
+
+The co-signing helper, `scripts/attest.mjs`, is also the reference for how the backend submits attestations: the verifier sends the transaction and the partner signs its own authorization entry. Run `npm install` in `scripts/` before using it.
+
+### Multisig admin
+
+Stellar has multisig built into the protocol: an account can require several of its signers to authorize anything it does, and every `require_auth()` on its address is enforced by the network itself. The admin should be such an account, not a single key.
+
+```bash
+# Once: make an account a 2-of-3 multisig. Its own key is removed as a signer.
+scripts/setup-multisig.sh rc-council 2 rc-signer-1 rc-signer-2 rc-signer-3
+
+# Hand every contract's admin role to it (propose, then accept with two signatures).
+SIGNERS="rc-signer-1 rc-signer-2" scripts/handover-to-multisig.sh rc-council $VAULT $LEDGER $ENGINE
+
+# Any admin action afterwards collects the signatures on a single transaction.
+SIGNERS="rc-signer-1 rc-signer-3" scripts/council-invoke.sh rc-council $LEDGER set_partner \
+  --admin <council address> --partner <address> --authorized true
+```
+
+Anyone can check the arrangement on-chain: the council's signers and thresholds are public, and each contract's `get_admin` names the council.
+
+### Timelock
+
+A multisig limits who can act as admin; the timelock limits how fast. Upgrading any contract, and changing where forfeited collateral is sent, happen in two steps with a public delay between them:
+
+1. `schedule_action(admin, action)` records an `Upgrade(wasm_hash)` or `SetSettlement(address)` and its earliest execution time.
+2. `execute_action(admin)` runs it once that time has passed. `cancel_action(admin)` withdraws it before then.
+
+The delay is fixed at deployment (48 hours by default) and readable from `get_timelock_secs`, and the pending change from `get_scheduled_action`, so guarantors and the admin's other signers see it coming. Upload new code with `stellar contract upload` first, and schedule the hash it prints.
 
 ### Testnet
 
-Deployed to Stellar testnet, against a test asset issued for the purpose rather than Circle's USDC:
+Deployed to Stellar testnet with the production defaults, a 48-hour timelock, the admin role held by a 2-of-3 council, and forfeited collateral sent to that council, against a test asset issued for the purpose rather than Circle's USDC:
 
 | Contract | Address |
 |----------|---------|
-| GuarantorVault | `CBIAT5DAKX3LNZOBDJWRAEVKFPCZ5FPS7MZAG32SHTAJTV4ZMRQXV7FF` |
-| LoanLedger | `CCXZ7UFSF5ZEB5ZYOQOAWIZQ4FSIOZLE2T2PDYXZHR37Y775JHSBRSKI` |
-| LiquidationEngine | `CDWFP5FQY65QVGEMP7LYVT4QZGCR5SYASNQVCOU5XNLSAQLJJYNRDXI2` |
+| GuarantorVault | `CD6TYOKK74XIACIS423QJ2XW3Z646AMMHEAPAIZR2SWKFTRA5F3FL3QR` |
+| LoanLedger | `CDCS5WKQPSQKA65HNDT6MS3OFS36VCZDMBJZ575REFDZCSABEUQFQSIL` |
+| LiquidationEngine | `CC25FFHO6CFCBZPV5J7IJV4LJWDIN2X2LIELKBBBZBAYQV42CKXWC4NU` |
 | Test USDC (SAC) | `CAWDARLC5JRSXG52Q6RWJJZ5YNEI3KJJOGVNQHEFAEQMESGPXRFCSHI4` |
-
-### Upgrades and the admin role
-
-Every contract has `upgrade(admin, new_wasm_hash)`, which swaps its code while keeping its address and storage, so a bug found after launch can be fixed without migrating live loans or locked collateral. Upload the new wasm with `stellar contract upload` first, then call `upgrade` with the hash it prints.
-
-The admin role is handed over in two steps: `propose_admin(admin, new_admin)`, then `accept_admin(new_admin)` from the new address. Nothing changes until the new admin accepts, so a mistyped address cannot lock the protocol out.
+| Admin council (2-of-3) | `GAFDAOJ6UE3VIJ43W6WEW6D6T3MVDE5PISA74AS7AEIJE4KURQAJ7VMT` |
 
 ### Storage lifetimes
 
-Contract instances, vaults, loans, partner registrations and reputation scores are extended to about 120 days whenever they fall below about 90, on every call that uses them. Reading a loan renews it, so the engine's permissionless cranks double as a keep-alive for idle loans. Anything left entirely untouched for longer than that is archived rather than lost, and can be restored with a standard `RestoreFootprint` operation.
+Contract instances, vaults, loans, partner and verifier registrations and reputation scores are extended to about 120 days whenever they fall below about 90, on every call that uses them. Reading a loan renews it, so the engine's permissionless cranks double as a keep-alive for idle loans. Anything left entirely untouched for longer than that is archived rather than lost, and can be restored with a standard `RestoreFootprint` operation.
 
 ## Known limitations
 
-These are the protocol's current trust assumptions and gaps, stated plainly. They are the things to resolve, or accept knowingly, before mainnet.
+These are the protocol's remaining trust assumptions and gaps, stated plainly. They are the things to resolve, or accept knowingly, before mainnet.
 
-* **A partner is still trusted for the loans it services.** Binding each loan to its partner stops one compromised key from touching the whole protocol, but on its own loans an attestation still releases collateral immediately. A compromised partner key can free collateral on every loan it services without any money having moved. A release delay with a dispute window, or corroboration from a second source, would close this.
-* **The admin key is all-powerful.** It can upgrade every contract's code, which is equivalent to full control of all collateral. In production it should be a multisig with a timelock on upgrades, not a single key.
-* **The oracle sets collateral requirements.** A compromised oracle can publish perfect scores and push every loan's LTV down to the 110% floor. The floor bounds the damage but does not remove it.
-* **Liquidation proceeds go to a platform-controlled address**, not through a market. Recovery of the outstanding balance off-chain is outside the protocol.
+* **A repayment still rests on two parties' word.** No single key can release collateral any more, but the loan's partner and a verifier together can, immediately, with no money having moved. Collusion between a partner and the platform, or both keys stolen, defeats it. A release delay with a dispute window would add a chance to catch that.
+* **Some admin powers are still instant.** The council can, without a timelock, register or revoke partners and verifiers, reassign a loan's partner, and change the oracle. None of these can move collateral to the council, but revoking every verifier would freeze repayments, and a new oracle can lower collateral requirements on new loans down to the floor.
+* **The multisig is a deployment choice, not a contract rule.** The contracts accept any admin address. That the admin is a 2-of-3 council is enforced by the account's own configuration, which anyone can inspect on-chain but which the contracts do not check.
+* **No events yet.** Scheduled changes and attestations are visible by reading contract state, not by subscribing to events, so monitoring the timelock means polling `get_scheduled_action`.
+* **The oracle sets collateral requirements.** A compromised oracle can push every new loan's LTV down to the 110% floor. The floor bounds the damage but does not remove it.
+* **Liquidation proceeds go to a platform-controlled address**, not through a market. Recovering the outstanding balance off-chain is outside the protocol.
 * **One grace period for every loan**, fixed when the ledger is deployed.
 * **Not audited.** The contracts have unit tests and a testnet smoke test, not an independent security review. Do not hold real funds in them until they have had one.
 
 ## Roadmap
 
-* **Multi-partner attestation:** require corroborating attestations from more than one partner before a repayment counts.
+* **Delayed collateral release:** hold released collateral for a dispute window before it becomes withdrawable, so a colluding partner and verifier can be caught.
+* **Events:** emit events for attestations, scheduled and executed admin actions, and defaults, so the timelock can be monitored rather than polled.
+* **Timelock the remaining admin powers**, or split them across roles with narrower keys.
 * **Per-loan grace configuration:** let the grace period vary with loan size or beneficiary reputation instead of being global.
 * **DEX-based liquidation:** settle forfeited collateral through a swap rather than transferring USDC to a platform-controlled address.
 * **On-chain reputation derivation:** move part of the scoring on-chain so the LTV is reproducible without trusting the oracle.
-* **Admin hardening:** move the admin role to a multisig and put upgrades behind a timelock.
-* **Delayed collateral release:** hold released collateral for a dispute window before it becomes withdrawable.
 
 ## License
 MIT
