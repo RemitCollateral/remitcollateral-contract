@@ -16,6 +16,7 @@ struct Setup<'a> {
     admin: Address,
     oracle: Address,
     partner: Address,
+    verifier: Address,
     engine: Address,
     guarantor: Address,
     beneficiary: BytesN<32>,
@@ -28,6 +29,7 @@ fn setup<'a>() -> Setup<'a> {
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     let partner = Address::generate(&env);
+    let verifier = Address::generate(&env);
     let engine = Address::generate(&env);
     let guarantor = Address::generate(&env);
     let settlement = Address::generate(&env);
@@ -61,6 +63,7 @@ fn setup<'a>() -> Setup<'a> {
     ledger.set_oracle(&admin, &oracle);
     ledger.set_liquidation_engine(&admin, &engine);
     ledger.set_partner(&admin, &partner, &true);
+    ledger.set_verifier(&admin, &verifier, &true);
 
     vault.deposit(&guarantor, &500_000);
 
@@ -71,6 +74,7 @@ fn setup<'a>() -> Setup<'a> {
         admin,
         oracle,
         partner,
+        verifier,
         engine,
         guarantor,
         beneficiary,
@@ -165,7 +169,9 @@ fn test_repayment_releases_collateral_proportionally() {
 
     // First installment: 25% repaid → 25% of collateral earned, less the 5% buffer.
     // 15_000 * 2_500/10_000 = 3_750; 3_750 * 95% = 3_562
-    let released = s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    let released = s
+        .ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
     assert_eq!(released, 3_562);
     assert_eq!(s.vault.get_locked(&s.guarantor), 15_000 - 3_562);
 
@@ -175,13 +181,16 @@ fn test_repayment_releases_collateral_proportionally() {
     assert_eq!(loan.next_due, 60 * DAY);
 
     // Second and third keep releasing on the same curve.
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
     assert_eq!(s.ledger.get_loan(&id).unwrap().collateral_released, 7_125);
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
     assert_eq!(s.ledger.get_loan(&id).unwrap().collateral_released, 10_687);
 
     // Final installment closes the loan and returns everything, buffer included.
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
     let loan = s.ledger.get_loan(&id).unwrap();
     assert!(matches!(loan.status, LoanStatus::Repaid));
     assert_eq!(loan.collateral_released, 15_000);
@@ -210,30 +219,30 @@ fn test_only_authorized_partners_can_attest() {
     let impostor = Address::generate(&s.env);
     assert!(s
         .ledger
-        .try_attest_repayment(&impostor, &id, &2_500)
+        .try_attest_repayment(&impostor, &s.verifier, &id, &2_500)
         .is_err());
     // Not even the guarantor may claim their own beneficiary repaid.
     assert!(s
         .ledger
-        .try_attest_repayment(&s.guarantor, &id, &2_500)
+        .try_attest_repayment(&s.guarantor, &s.verifier, &id, &2_500)
         .is_err());
 
     // Revoking a partner takes effect immediately.
     s.ledger.set_partner(&s.admin, &s.partner, &false);
     assert!(s
         .ledger
-        .try_attest_repayment(&s.partner, &id, &2_500)
+        .try_attest_repayment(&s.partner, &s.verifier, &id, &2_500)
         .is_err());
     s.ledger.set_partner(&s.admin, &s.partner, &true);
     assert!(s
         .ledger
-        .try_attest_repayment(&s.partner, &id, &2_500)
+        .try_attest_repayment(&s.partner, &s.verifier, &id, &2_500)
         .is_ok());
 
     // Repaying more than the principal is rejected.
     assert!(s
         .ledger
-        .try_attest_repayment(&s.partner, &id, &99_999)
+        .try_attest_repayment(&s.partner, &s.verifier, &id, &99_999)
         .is_err());
 }
 
@@ -268,7 +277,8 @@ fn test_grace_period_transitions() {
     assert!(s.ledger.try_mark_defaulted(&stranger, &id).is_err());
 
     // Paying during grace restores the loan to good standing.
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
     let loan = s.ledger.get_loan(&id).unwrap();
     assert!(matches!(loan.status, LoanStatus::Active));
     assert_eq!(loan.grace_expires_at, 0);
@@ -289,7 +299,8 @@ fn test_default_closes_the_loan() {
         &4,
         &(30 * DAY),
     );
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
 
     s.env.ledger().set_timestamp(61 * DAY);
     s.ledger.mark_grace(&s.engine, &id);
@@ -314,7 +325,7 @@ fn test_default_closes_the_loan() {
     // A defaulted loan accepts no further repayments.
     assert!(s
         .ledger
-        .try_attest_repayment(&s.partner, &id, &1_000)
+        .try_attest_repayment(&s.partner, &s.verifier, &id, &1_000)
         .is_err());
 }
 
@@ -334,7 +345,7 @@ fn test_token_attestations_cannot_close_a_loan() {
     // trivial amount, must not close the loan or free the collateral. Only
     // principal actually repaid does that.
     for _ in 0..4 {
-        s.ledger.attest_repayment(&s.partner, &id, &1);
+        s.ledger.attest_repayment(&s.partner, &s.verifier, &id, &1);
     }
 
     let loan = s.ledger.get_loan(&id).unwrap();
@@ -352,7 +363,8 @@ fn test_token_attestations_cannot_close_a_loan() {
         .is_some());
 
     // Repaying the rest closes it properly and returns everything.
-    s.ledger.attest_repayment(&s.partner, &id, &9_996);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &9_996);
     let loan = s.ledger.get_loan(&id).unwrap();
     assert!(matches!(loan.status, LoanStatus::Repaid));
     assert_eq!(loan.collateral_released, 15_000);
@@ -376,7 +388,7 @@ fn test_token_payments_cannot_defer_default() {
     for _ in 0..12 {
         let due = s.ledger.get_loan(&id).unwrap().next_due;
         s.env.ledger().set_timestamp(due - 1);
-        s.ledger.attest_repayment(&s.partner, &id, &1);
+        s.ledger.attest_repayment(&s.partner, &s.verifier, &id, &1);
     }
 
     // The schedule is anchored to principal repaid: 12 of 10_000 covers no
@@ -408,7 +420,8 @@ fn test_partial_payment_during_grace_keeps_the_deadline() {
 
     // A payment that leaves the loan behind does not end grace or restart it.
     s.env.ledger().set_timestamp(40 * DAY);
-    s.ledger.attest_repayment(&s.partner, &id, &100);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &100);
     let loan = s.ledger.get_loan(&id).unwrap();
     assert!(matches!(loan.status, LoanStatus::Grace));
     assert_eq!(loan.grace_expires_at, deadline);
@@ -428,7 +441,8 @@ fn test_partial_payment_during_grace_keeps_the_deadline() {
     );
     s.env.ledger().set_timestamp(31 * DAY);
     s.ledger.mark_grace(&s.engine, &id);
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
     let loan = s.ledger.get_loan(&id).unwrap();
     assert!(matches!(loan.status, LoanStatus::Active));
     assert_eq!(loan.grace_expires_at, 0);
@@ -447,13 +461,15 @@ fn test_prepayment_advances_the_schedule() {
     );
 
     // Paying two installments at once covers two, so the next due date is the third.
-    s.ledger.attest_repayment(&s.partner, &id, &5_000);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &5_000);
     let loan = s.ledger.get_loan(&id).unwrap();
     assert_eq!(loan.installments_paid, 2);
     assert_eq!(loan.next_due, 90 * DAY);
 
     // A payment short of a full installment covers nothing extra.
-    s.ledger.attest_repayment(&s.partner, &id, &2_499);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_499);
     let loan = s.ledger.get_loan(&id).unwrap();
     assert_eq!(loan.installments_paid, 2);
     assert_eq!(loan.next_due, 90 * DAY);
@@ -478,7 +494,7 @@ fn test_only_the_loans_own_partner_can_attest() {
     // Another registered partner cannot attest for a loan it does not service.
     assert!(s
         .ledger
-        .try_attest_repayment(&other_partner, &id, &2_500)
+        .try_attest_repayment(&other_partner, &s.verifier, &id, &2_500)
         .is_err());
 
     // A loan cannot be bound to a partner that is not registered.
@@ -508,9 +524,10 @@ fn test_only_the_loans_own_partner_can_attest() {
     s.ledger.reassign_partner(&s.admin, &id, &other_partner);
     assert!(s
         .ledger
-        .try_attest_repayment(&s.partner, &id, &2_500)
+        .try_attest_repayment(&s.partner, &s.verifier, &id, &2_500)
         .is_err());
-    s.ledger.attest_repayment(&other_partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&other_partner, &s.verifier, &id, &2_500);
     assert_eq!(s.ledger.get_loan(&id).unwrap().total_repaid_usd, 2_500);
 }
 
@@ -596,4 +613,63 @@ fn test_upgrade_and_admin_handover_are_admin_only() {
     ));
     s.ledger.set_partner(&new_admin, &partner, &true);
     assert!(s.ledger.is_partner(&partner));
+}
+
+#[test]
+fn test_attestations_need_the_partner_and_an_independent_verifier() {
+    let s = setup();
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
+
+    // A valid attestation carries both signatures on the same invocation.
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
+    let auths = s.env.auths();
+    assert!(auths.iter().any(|(a, _)| *a == s.partner));
+    assert!(auths.iter().any(|(a, _)| *a == s.verifier));
+
+    // An unregistered co-signer is refused.
+    let stranger = Address::generate(&s.env);
+    assert!(s
+        .ledger
+        .try_attest_repayment(&s.partner, &stranger, &id, &100)
+        .is_err());
+
+    // The partner cannot co-sign its own attestation.
+    assert!(s
+        .ledger
+        .try_attest_repayment(&s.partner, &s.partner, &id, &100)
+        .is_err());
+
+    // Another partner is not a verifier, so two partners cannot collude.
+    let other_partner = Address::generate(&s.env);
+    s.ledger.set_partner(&s.admin, &other_partner, &true);
+    assert!(s
+        .ledger
+        .try_attest_repayment(&s.partner, &other_partner, &id, &100)
+        .is_err());
+
+    // The roles are disjoint: no key may hold both.
+    assert!(s
+        .ledger
+        .try_set_verifier(&s.admin, &s.partner, &true)
+        .is_err());
+    assert!(s
+        .ledger
+        .try_set_partner(&s.admin, &s.verifier, &true)
+        .is_err());
+
+    // Revoking the verifier stops attestations immediately.
+    s.ledger.set_verifier(&s.admin, &s.verifier, &false);
+    assert!(s
+        .ledger
+        .try_attest_repayment(&s.partner, &s.verifier, &id, &100)
+        .is_err());
+    assert_eq!(s.ledger.get_loan(&id).unwrap().total_repaid_usd, 2_500);
 }

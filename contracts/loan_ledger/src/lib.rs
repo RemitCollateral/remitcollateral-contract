@@ -43,6 +43,8 @@ pub enum Error {
     GraceNotExpired = 12,
     Overpayment = 13,
     UnknownPartner = 14,
+    UnknownVerifier = 15,
+    RoleConflict = 16,
 }
 
 #[contracttype]
@@ -109,6 +111,7 @@ pub enum DataKey {
     LoanCount,
     Loan(u64),
     Partner(Address),
+    Verifier(Address),
     Reputation(BytesN<32>),
     OpenLoan(Address, BytesN<32>),
     PendingAdmin,
@@ -180,7 +183,26 @@ impl LoanLedgerContract {
     pub fn set_partner(env: Env, admin: Address, partner: Address, authorized: bool) {
         Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
+        if authorized && Self::authorized_verifier(&env, &partner) {
+            panic_with_error!(&env, Error::RoleConflict);
+        }
         let key = DataKey::Partner(partner);
+        env.storage().persistent().set(&key, &authorized);
+        Self::touch(&env, &key);
+    }
+
+    /// Authorize or revoke a repayment verifier: the independent second
+    /// signature every attestation needs. In practice this is the platform's
+    /// own key, held by the backend that checks each partner report before
+    /// co-signing it. A verifier can never also be a partner, so no single
+    /// key can hold both halves of an attestation.
+    pub fn set_verifier(env: Env, admin: Address, verifier: Address, authorized: bool) {
+        Self::extend_instance(&env);
+        Self::require_admin(&env, &admin);
+        if authorized && Self::authorized_partner(&env, &verifier) {
+            panic_with_error!(&env, Error::RoleConflict);
+        }
+        let key = DataKey::Verifier(verifier);
         env.storage().persistent().set(&key, &authorized);
         Self::touch(&env, &key);
     }
@@ -347,15 +369,27 @@ impl LoanLedgerContract {
     /// Record a repayment the off-ramp partner collected in local currency, and
     /// release the collateral it earns back. Returns the amount released.
     ///
+    /// Must be co-signed by the loan's own partner and a registered verifier.
+    ///
     /// Release is proportional to principal repaid, less the safety buffer that
     /// is withheld until the loan closes:
     ///
     /// ```text
     /// releasable = collateral * (repaid / principal) * (1 - safety_buffer)
     /// ```
-    pub fn attest_repayment(env: Env, partner: Address, loan_id: u64, amount_usd: i128) -> i128 {
+    pub fn attest_repayment(
+        env: Env,
+        partner: Address,
+        verifier: Address,
+        loan_id: u64,
+        amount_usd: i128,
+    ) -> i128 {
         Self::extend_instance(&env);
+        // Both halves of the attestation must sign the same invocation: the
+        // partner that collected the repayment, and an independent verifier
+        // that checked it. A single stolen key can release nothing.
         partner.require_auth();
+        verifier.require_auth();
         if amount_usd <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -366,6 +400,9 @@ impl LoanLedgerContract {
         // on another partner's loans.
         if partner != loan.partner || !Self::authorized_partner(&env, &partner) {
             panic_with_error!(&env, Error::NotAuthorized);
+        }
+        if verifier == partner || !Self::authorized_verifier(&env, &verifier) {
+            panic_with_error!(&env, Error::UnknownVerifier);
         }
         if !matches!(loan.status, LoanStatus::Active | LoanStatus::Grace) {
             panic_with_error!(&env, Error::LoanNotActive);
@@ -530,6 +567,13 @@ impl LoanLedgerContract {
             .unwrap_or(0)
     }
 
+    pub fn is_verifier(env: Env, verifier: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Verifier(verifier))
+            .unwrap_or(false)
+    }
+
     pub fn is_partner(env: Env, partner: Address) -> bool {
         env.storage()
             .persistent()
@@ -614,6 +658,18 @@ impl LoanLedgerContract {
             env.storage()
                 .persistent()
                 .extend_ttl(key, THRESHOLD, EXTEND_TO);
+        }
+    }
+
+    /// Whether a verifier is authorized, renewing its registration on use.
+    fn authorized_verifier(env: &Env, verifier: &Address) -> bool {
+        let key = DataKey::Verifier(verifier.clone());
+        match env.storage().persistent().get::<_, bool>(&key) {
+            Some(authorized) => {
+                Self::touch(env, &key);
+                authorized
+            }
+            None => false,
         }
     }
 

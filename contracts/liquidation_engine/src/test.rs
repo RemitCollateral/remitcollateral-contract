@@ -17,6 +17,7 @@ struct Setup<'a> {
     vault: GuarantorVaultContractClient<'a>,
     usdc: token::Client<'a>,
     partner: Address,
+    verifier: Address,
     settlement: Address,
     guarantor: Address,
     beneficiary: BytesN<32>,
@@ -29,6 +30,7 @@ fn setup<'a>() -> Setup<'a> {
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     let partner = Address::generate(&env);
+    let verifier = Address::generate(&env);
     let guarantor = Address::generate(&env);
     let settlement = Address::generate(&env);
     let beneficiary = BytesN::from_array(&env, &[3u8; 32]);
@@ -68,6 +70,7 @@ fn setup<'a>() -> Setup<'a> {
     ledger.set_oracle(&admin, &oracle);
     ledger.set_liquidation_engine(&admin, &engine_id);
     ledger.set_partner(&admin, &partner, &true);
+    ledger.set_verifier(&admin, &verifier, &true);
 
     vault.deposit(&guarantor, &500_000);
 
@@ -78,6 +81,7 @@ fn setup<'a>() -> Setup<'a> {
         vault,
         usdc,
         partner,
+        verifier,
         settlement,
         guarantor,
         beneficiary,
@@ -96,7 +100,8 @@ fn test_full_default_to_liquidation() {
         &(30 * DAY),
     );
     // 150% LTV → 15_000 locked. One installment paid → 3_562 released, 11_438 left.
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
 
     // Nothing to do while the loan is current.
     assert!(!s.engine.poke(&id));
@@ -180,7 +185,8 @@ fn test_cranks_are_permissionless_but_state_driven() {
     assert!(s.engine.try_flag_overdue(&id).is_err());
 
     // Paying during grace clears it, and the crank goes quiet again.
-    s.ledger.attest_repayment(&s.partner, &id, &2_500);
+    s.ledger
+        .attest_repayment(&s.partner, &s.verifier, &id, &2_500);
     assert!(!s.engine.poke(&id));
 
     // Liquidating a healthy loan is refused.
