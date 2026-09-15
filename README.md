@@ -173,5 +173,9 @@ These are the protocol's remaining trust assumptions and gaps, stated plainly. T
 * **DEX-based liquidation:** settle forfeited collateral through a swap rather than transferring USDC to a platform-controlled address.
 * **On-chain reputation derivation:** move part of the scoring on-chain so the LTV is reproducible without trusting the oracle.
 
+## Contributing
+
+Start with the [contributing guide](https://github.com/RemitCollateral/remitcollateral-docs/blob/main/CONTRIBUTING.md) in `remitcollateral-docs`. It covers how to pick an issue, which repository a change belongs in, how to build, test and deploy the contracts, the protocol rules every change must keep, and how to open a pull request. Report vulnerabilities privately, as the [security policy](https://github.com/RemitCollateral/remitcollateral-docs/blob/main/SECURITY.md) describes, not in a public issue.
+
 ## License
 MIT
