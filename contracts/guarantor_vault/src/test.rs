@@ -28,9 +28,11 @@ fn setup<'a>() -> Setup<'a> {
     let usdc = token::Client::new(&env, &sac.address());
     token::StellarAssetClient::new(&env, &sac.address()).mint(&guarantor, &10_000);
 
-    let id = env.register(GuarantorVaultContract, ());
+    let id = env.register(
+        GuarantorVaultContract,
+        (admin.clone(), sac.address(), settlement.clone()),
+    );
     let vault = GuarantorVaultContractClient::new(&env, &id);
-    vault.initialize(&admin, &sac.address(), &settlement);
     vault.set_loan_ledger(&admin, &ledger);
     vault.set_liquidation_engine(&admin, &engine);
 
@@ -161,8 +163,14 @@ fn test_authorization_is_enforced() {
         .vault
         .try_set_settlement_address(&stranger, &stranger)
         .is_err());
-    assert!(s
-        .vault
-        .try_initialize(&s.admin, &s.usdc.address, &s.settlement)
-        .is_err());
+}
+
+#[test]
+fn test_constructor_sets_configuration_at_deploy() {
+    let s = setup();
+    // Configuration comes from the deploy transaction itself, so there is no
+    // window in which an uninitialized vault could be claimed by someone else.
+    assert_eq!(s.vault.get_admin(), s.admin);
+    assert_eq!(s.vault.get_usdc_token(), s.usdc.address);
+    assert_eq!(s.vault.get_settlement_address(), s.settlement);
 }

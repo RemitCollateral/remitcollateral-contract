@@ -17,7 +17,6 @@ use soroban_sdk::{
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    AlreadyInitialized = 1,
     NotInitialized = 2,
     NotAuthorized = 3,
     InvalidAmount = 4,
@@ -54,10 +53,15 @@ pub struct GuarantorVaultContract;
 
 #[contractimpl]
 impl GuarantorVaultContract {
-    pub fn initialize(env: Env, admin: Address, usdc_token: Address, settlement_address: Address) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+    /// Runs once, atomically, as part of the deploy transaction. There is no
+    /// separate initialize call for anyone to front-run between deployment and
+    /// setup, so nobody else can claim the admin role.
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        usdc_token: Address,
+        settlement_address: Address,
+    ) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()

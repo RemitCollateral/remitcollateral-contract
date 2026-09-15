@@ -37,17 +37,31 @@ fn setup<'a>() -> Setup<'a> {
     let usdc = token::Client::new(&env, &sac.address());
     token::StellarAssetClient::new(&env, &sac.address()).mint(&guarantor, &1_000_000);
 
-    let vault_id = env.register(GuarantorVaultContract, ());
+    let vault_id = env.register(
+        GuarantorVaultContract,
+        (admin.clone(), sac.address(), settlement.clone()),
+    );
     let vault = GuarantorVaultContractClient::new(&env, &vault_id);
-    vault.initialize(&admin, &sac.address(), &settlement);
 
-    let ledger_id = env.register(LoanLedgerContract, ());
+    // base 150%, floor 110%, 5% safety buffer, 14-day grace
+    let ledger_id = env.register(
+        LoanLedgerContract,
+        (
+            admin.clone(),
+            vault_id.clone(),
+            15_000u32,
+            11_000u32,
+            500u32,
+            14 * DAY,
+        ),
+    );
     let ledger = LoanLedgerContractClient::new(&env, &ledger_id);
-    ledger.initialize(&admin, &vault_id, &15_000, &11_000, &500, &(14 * DAY));
 
-    let engine_id = env.register(LiquidationEngineContract, ());
+    let engine_id = env.register(
+        LiquidationEngineContract,
+        (admin.clone(), vault_id.clone(), ledger_id.clone()),
+    );
     let engine = LiquidationEngineContractClient::new(&env, &engine_id);
-    engine.initialize(&admin, &vault_id, &ledger_id);
 
     vault.set_loan_ledger(&admin, &ledger_id);
     vault.set_liquidation_engine(&admin, &engine_id);

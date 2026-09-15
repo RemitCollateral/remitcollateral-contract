@@ -36,14 +36,25 @@ fn setup<'a>() -> Setup<'a> {
     let sac = env.register_stellar_asset_contract_v2(admin.clone());
     token::StellarAssetClient::new(&env, &sac.address()).mint(&guarantor, &1_000_000);
 
-    let vault_id = env.register(GuarantorVaultContract, ());
+    let vault_id = env.register(
+        GuarantorVaultContract,
+        (admin.clone(), sac.address(), settlement.clone()),
+    );
     let vault = GuarantorVaultContractClient::new(&env, &vault_id);
-    vault.initialize(&admin, &sac.address(), &settlement);
 
-    let ledger_id = env.register(LoanLedgerContract, ());
-    let ledger = LoanLedgerContractClient::new(&env, &ledger_id);
     // base 150%, floor 110%, 5% safety buffer, 14-day grace
-    ledger.initialize(&admin, &vault_id, &15_000, &11_000, &500, &(14 * DAY));
+    let ledger_id = env.register(
+        LoanLedgerContract,
+        (
+            admin.clone(),
+            vault_id.clone(),
+            15_000u32,
+            11_000u32,
+            500u32,
+            14 * DAY,
+        ),
+    );
+    let ledger = LoanLedgerContractClient::new(&env, &ledger_id);
 
     vault.set_loan_ledger(&admin, &ledger_id);
     vault.set_liquidation_engine(&admin, &engine);
@@ -501,4 +512,17 @@ fn test_only_the_loans_own_partner_can_attest() {
         .is_err());
     s.ledger.attest_repayment(&other_partner, &id, &2_500);
     assert_eq!(s.ledger.get_loan(&id).unwrap().total_repaid_usd, 2_500);
+}
+
+#[test]
+#[should_panic]
+fn test_constructor_rejects_invalid_config() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let vault = Address::generate(&env);
+    // A floor above the base LTV is nonsensical; the deploy itself must fail.
+    env.register(
+        LoanLedgerContract,
+        (admin, vault, 11_000u32, 15_000u32, 500u32, 14 * DAY),
+    );
 }

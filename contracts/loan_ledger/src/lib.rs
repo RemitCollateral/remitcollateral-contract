@@ -21,7 +21,6 @@ const BPS: i128 = 10_000;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    AlreadyInitialized = 1,
     NotInitialized = 2,
     NotAuthorized = 3,
     InvalidAmount = 4,
@@ -117,7 +116,10 @@ pub struct LoanLedgerContract;
 
 #[contractimpl]
 impl LoanLedgerContract {
-    pub fn initialize(
+    /// Runs once, atomically, as part of the deploy transaction. There is no
+    /// separate initialize call for anyone to front-run between deployment and
+    /// setup, so nobody else can claim the admin role.
+    pub fn __constructor(
         env: Env,
         admin: Address,
         vault: Address,
@@ -126,9 +128,6 @@ impl LoanLedgerContract {
         safety_buffer_bps: u32,
         grace_period_secs: u64,
     ) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
         if min_ltv_bps > base_ltv_bps || safety_buffer_bps >= BPS as u32 || grace_period_secs == 0 {
             panic_with_error!(&env, Error::InvalidConfig);
         }
