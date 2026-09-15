@@ -6,7 +6,7 @@ use soroban_sdk::{
         storage::{Instance as _, Persistent as _},
         Address as _, Ledger as _,
     },
-    token, Env,
+    token, BytesN, Env,
 };
 
 struct Setup<'a> {
@@ -213,4 +213,38 @@ fn test_vault_lifetime_is_extended_on_use() {
     // ...and its next use renews it to the full window again.
     s.vault.lock_collateral(&s.ledger, &s.guarantor, &1);
     assert_eq!(vault_ttl(&s, &s.guarantor), EXTEND_TO);
+}
+
+#[test]
+fn test_upgrade_and_admin_handover_are_admin_only() {
+    let s = setup();
+    let stranger = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    let hash = BytesN::from_array(&s.env, &[0u8; 32]);
+    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
+
+    // Only the admin may replace the code, and it is refused as unauthorized,
+    // not merely because the hash was never uploaded.
+    assert!(matches!(
+        s.vault.try_upgrade(&stranger, &hash),
+        Err(Ok(e)) if e == not_authorized
+    ));
+    assert!(s.vault.try_propose_admin(&stranger, &new_admin).is_err());
+
+    // Handover is two-step: proposing changes nothing on its own.
+    s.vault.propose_admin(&s.admin, &new_admin);
+    assert_eq!(s.vault.get_admin(), s.admin);
+    assert!(s.vault.try_accept_admin(&stranger).is_err());
+
+    s.vault.accept_admin(&new_admin);
+    assert_eq!(s.vault.get_admin(), new_admin);
+
+    // The old admin loses its powers; the new one has them.
+    assert!(matches!(
+        s.vault.try_set_loan_ledger(&s.admin, &stranger),
+        Err(Ok(e)) if e == not_authorized
+    ));
+    s.vault.set_loan_ledger(&new_admin, &s.ledger);
+    // A completed handover cannot be replayed.
+    assert!(s.vault.try_accept_admin(&new_admin).is_err());
 }

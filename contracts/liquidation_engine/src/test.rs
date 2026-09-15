@@ -187,3 +187,29 @@ fn test_cranks_are_permissionless_but_state_driven() {
     assert!(s.engine.try_liquidate(&id).is_err());
     assert_eq!(s.usdc.balance(&s.settlement), 0);
 }
+
+#[test]
+fn test_upgrade_and_admin_handover_are_admin_only() {
+    let s = setup();
+    let admin = s.engine.get_admin();
+    let stranger = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    let hash = BytesN::from_array(&s.env, &[0u8; 32]);
+    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
+
+    assert!(matches!(
+        s.engine.try_upgrade(&stranger, &hash),
+        Err(Ok(e)) if e == not_authorized
+    ));
+
+    s.engine.propose_admin(&admin, &new_admin);
+    assert_eq!(s.engine.get_admin(), admin);
+    assert!(s.engine.try_accept_admin(&stranger).is_err());
+    s.engine.accept_admin(&new_admin);
+    assert_eq!(s.engine.get_admin(), new_admin);
+
+    assert!(matches!(
+        s.engine.try_propose_admin(&admin, &stranger),
+        Err(Ok(e)) if e == not_authorized
+    ));
+}

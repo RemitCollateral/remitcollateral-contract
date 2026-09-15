@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error, Address,
-    Env,
+    BytesN, Env,
 };
 
 /// Ledgers per day at Stellar's 5-second ledger close time.
@@ -39,6 +39,7 @@ pub enum DataKey {
     Admin,
     Vault,
     LoanLedger,
+    PendingAdmin,
 }
 
 /// The slice of LoanLedger this contract calls.
@@ -76,6 +77,45 @@ impl LiquidationEngineContract {
             .instance()
             .set(&DataKey::LoanLedger, &loan_ledger);
     }
+
+    // --- Administration ---
+
+    /// Replace this contract's code while keeping its address and storage, so
+    /// a bug found after launch can be fixed without migrating live loans or
+    /// locked collateral. Admin only. The new wasm must already be uploaded.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        Self::extend_instance(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    /// Begin handing the admin role to `new_admin`. Nothing changes until the
+    /// new admin accepts, so a mistyped address cannot lock the protocol out.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_admin(&env, &admin);
+        Self::extend_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+    }
+
+    /// Complete a handover proposed by the current admin.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        Self::extend_instance(&env);
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotAuthorized));
+        if new_admin != pending {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+    }
+
+    // --- Cranks ---
 
     /// Start the grace period on an overdue loan. Permissionless.
     pub fn flag_overdue(env: Env, loan_id: u64) {
@@ -159,6 +199,18 @@ impl LiquidationEngineContract {
     /// contract code, from being archived while the protocol is in use.
     fn extend_instance(env: &Env) {
         env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
+    }
+
+    fn require_admin(env: &Env, admin: &Address) {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+        if *admin != stored {
+            panic_with_error!(env, Error::NotAuthorized);
+        }
     }
 
     fn ledger(env: &Env) -> LedgerClient<'_> {

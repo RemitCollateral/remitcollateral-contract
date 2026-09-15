@@ -111,6 +111,7 @@ pub enum DataKey {
     Partner(Address),
     Reputation(BytesN<32>),
     OpenLoan(Address, BytesN<32>),
+    PendingAdmin,
 }
 
 /// The slice of GuarantorVault this contract calls.
@@ -219,6 +220,41 @@ impl LoanLedgerContract {
         }
         loan.partner = new_partner;
         Self::save_loan(&env, &loan);
+    }
+
+    /// Replace this contract's code while keeping its address and storage, so
+    /// a bug found after launch can be fixed without migrating live loans or
+    /// locked collateral. Admin only. The new wasm must already be uploaded.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        Self::extend_instance(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    /// Begin handing the admin role to `new_admin`. Nothing changes until the
+    /// new admin accepts, so a mistyped address cannot lock the protocol out.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_admin(&env, &admin);
+        Self::extend_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+    }
+
+    /// Complete a handover proposed by the current admin.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        Self::extend_instance(&env);
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotAuthorized));
+        if new_admin != pending {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
     }
 
     // --- Origination ---

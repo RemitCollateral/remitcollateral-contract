@@ -569,3 +569,31 @@ fn test_loan_lifetime_is_extended_by_use_and_by_the_crank() {
     s.ledger.is_overdue(&id);
     assert_eq!(persistent_ttl(&s, &loan_key), EXTEND_TO);
 }
+
+#[test]
+fn test_upgrade_and_admin_handover_are_admin_only() {
+    let s = setup();
+    let stranger = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    let hash = BytesN::from_array(&s.env, &[0u8; 32]);
+    let not_authorized = soroban_sdk::Error::from(Error::NotAuthorized);
+
+    assert!(matches!(
+        s.ledger.try_upgrade(&stranger, &hash),
+        Err(Ok(e)) if e == not_authorized
+    ));
+
+    s.ledger.propose_admin(&s.admin, &new_admin);
+    assert_eq!(s.ledger.get_admin(), s.admin);
+    assert!(s.ledger.try_accept_admin(&stranger).is_err());
+    s.ledger.accept_admin(&new_admin);
+    assert_eq!(s.ledger.get_admin(), new_admin);
+
+    let partner = Address::generate(&s.env);
+    assert!(matches!(
+        s.ledger.try_set_partner(&s.admin, &partner, &true),
+        Err(Ok(e)) if e == not_authorized
+    ));
+    s.ledger.set_partner(&new_admin, &partner, &true);
+    assert!(s.ledger.is_partner(&partner));
+}
