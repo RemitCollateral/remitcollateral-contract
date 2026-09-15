@@ -13,6 +13,15 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
 };
 
+/// Ledgers per day at Stellar's 5-second ledger close time.
+const DAY_IN_LEDGERS: u32 = 17_280;
+/// Storage lifetimes, in ledgers. Entries are extended to about 120 days
+/// whenever they fall below about 90, so they stay live while in use without
+/// paying rent on every call. Both are well under the network's maximum entry
+/// lifetime of about 180 days.
+const EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
+const THRESHOLD: u32 = 90 * DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -62,6 +71,7 @@ impl GuarantorVaultContract {
         usdc_token: Address,
         settlement_address: Address,
     ) {
+        Self::extend_instance(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -75,12 +85,14 @@ impl GuarantorVaultContract {
 
     /// Register the LoanLedger contract, the only caller allowed to lock collateral.
     pub fn set_loan_ledger(env: Env, admin: Address, ledger: Address) {
+        Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
         env.storage().instance().set(&DataKey::LoanLedger, &ledger);
     }
 
     /// Register the LiquidationEngine contract, the only caller allowed to forfeit collateral.
     pub fn set_liquidation_engine(env: Env, admin: Address, engine: Address) {
+        Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
         env.storage()
             .instance()
@@ -89,6 +101,7 @@ impl GuarantorVaultContract {
 
     /// Change where forfeited collateral is sent.
     pub fn set_settlement_address(env: Env, admin: Address, settlement_address: Address) {
+        Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
         env.storage()
             .instance()
@@ -99,6 +112,7 @@ impl GuarantorVaultContract {
 
     /// Deposit USDC into the caller's own vault.
     pub fn deposit(env: Env, guarantor: Address, amount: i128) {
+        Self::extend_instance(&env);
         guarantor.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -114,6 +128,7 @@ impl GuarantorVaultContract {
 
     /// Withdraw unlocked collateral. Collateral backing an active loan cannot be withdrawn.
     pub fn withdraw(env: Env, guarantor: Address, amount: i128) {
+        Self::extend_instance(&env);
         guarantor.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -136,6 +151,7 @@ impl GuarantorVaultContract {
 
     /// Reserve collateral against a new loan. LoanLedger only.
     pub fn lock_collateral(env: Env, caller: Address, guarantor: Address, amount: i128) {
+        Self::extend_instance(&env);
         caller.require_auth();
         Self::require_ledger(&env, &caller);
         if amount <= 0 {
@@ -156,6 +172,7 @@ impl GuarantorVaultContract {
     /// LiquidationEngine — the ledger releases as repayments land, the engine
     /// releases whatever a liquidation did not consume.
     pub fn release_collateral(env: Env, caller: Address, guarantor: Address, amount: i128) {
+        Self::extend_instance(&env);
         caller.require_auth();
         Self::require_ledger_or_engine(&env, &caller);
         if amount <= 0 {
@@ -174,6 +191,7 @@ impl GuarantorVaultContract {
     /// Seize locked collateral and move the USDC to the settlement address.
     /// LiquidationEngine only.
     pub fn forfeit_collateral(env: Env, caller: Address, guarantor: Address, amount: i128) {
+        Self::extend_instance(&env);
         caller.require_auth();
         Self::require_engine(&env, &caller);
         if amount <= 0 {
@@ -242,6 +260,12 @@ impl GuarantorVaultContract {
 
     // --- Internals ---
 
+    /// Keep the contract instance, and with it the configuration and the
+    /// contract code, from being archived while the protocol is in use.
+    fn extend_instance(env: &Env) {
+        env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
+    }
+
     fn vault_of(env: &Env, guarantor: &Address) -> Vault {
         env.storage()
             .persistent()
@@ -253,10 +277,14 @@ impl GuarantorVaultContract {
             })
     }
 
+    /// Persist a vault and extend its lifetime. Every mutation goes through
+    /// here, so a vault holding collateral is renewed each time it is used.
     fn save(env: &Env, vault: &Vault) {
+        let key = DataKey::Vault(vault.guarantor.clone());
+        env.storage().persistent().set(&key, vault);
         env.storage()
             .persistent()
-            .set(&DataKey::Vault(vault.guarantor.clone()), vault);
+            .extend_ttl(&key, THRESHOLD, EXTEND_TO);
     }
 
     fn usdc_client(env: &Env) -> token::Client<'_> {

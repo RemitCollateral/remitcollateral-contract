@@ -1,7 +1,13 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, token, Env};
+use soroban_sdk::{
+    testutils::{
+        storage::{Instance as _, Persistent as _},
+        Address as _, Ledger as _,
+    },
+    token, Env,
+};
 
 struct Setup<'a> {
     env: Env,
@@ -173,4 +179,38 @@ fn test_constructor_sets_configuration_at_deploy() {
     assert_eq!(s.vault.get_admin(), s.admin);
     assert_eq!(s.vault.get_usdc_token(), s.usdc.address);
     assert_eq!(s.vault.get_settlement_address(), s.settlement);
+}
+
+fn vault_ttl(s: &Setup, guarantor: &Address) -> u32 {
+    s.env.as_contract(&s.vault.address, || {
+        s.env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Vault(guarantor.clone()))
+    })
+}
+
+#[test]
+fn test_vault_lifetime_is_extended_on_use() {
+    let s = setup();
+    s.vault.deposit(&s.guarantor, &1_000);
+
+    // First use extends the vault, and the contract instance, to the full window.
+    assert_eq!(vault_ttl(&s, &s.guarantor), EXTEND_TO);
+    let instance_ttl = s
+        .env
+        .as_contract(&s.vault.address, || s.env.storage().instance().get_ttl());
+    assert_eq!(instance_ttl, EXTEND_TO);
+
+    // Forty days on, the entry has aged below the renewal threshold...
+    let aged = 40 * DAY_IN_LEDGERS;
+    s.env
+        .ledger()
+        .set_sequence_number(s.env.ledger().sequence() + aged);
+    assert_eq!(vault_ttl(&s, &s.guarantor), EXTEND_TO - aged);
+    assert!(EXTEND_TO - aged < THRESHOLD);
+
+    // ...and its next use renews it to the full window again.
+    s.vault.lock_collateral(&s.ledger, &s.guarantor, &1);
+    assert_eq!(vault_ttl(&s, &s.guarantor), EXTEND_TO);
 }

@@ -17,6 +17,15 @@ use soroban_sdk::{
 
 const BPS: i128 = 10_000;
 
+/// Ledgers per day at Stellar's 5-second ledger close time.
+const DAY_IN_LEDGERS: u32 = 17_280;
+/// Storage lifetimes, in ledgers. Entries are extended to about 120 days
+/// whenever they fall below about 90, so they stay live while in use without
+/// paying rent on every call. Both are well under the network's maximum entry
+/// lifetime of about 180 days.
+const EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
+const THRESHOLD: u32 = 90 * DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -128,6 +137,7 @@ impl LoanLedgerContract {
         safety_buffer_bps: u32,
         grace_period_secs: u64,
     ) {
+        Self::extend_instance(&env);
         if min_ltv_bps > base_ltv_bps || safety_buffer_bps >= BPS as u32 || grace_period_secs == 0 {
             panic_with_error!(&env, Error::InvalidConfig);
         }
@@ -150,12 +160,14 @@ impl LoanLedgerContract {
 
     /// Register the oracle allowed to publish reputation scores.
     pub fn set_oracle(env: Env, admin: Address, oracle: Address) {
+        Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
     }
 
     /// Register the LiquidationEngine allowed to drive default transitions.
     pub fn set_liquidation_engine(env: Env, admin: Address, engine: Address) {
+        Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
         env.storage()
             .instance()
@@ -165,15 +177,17 @@ impl LoanLedgerContract {
     /// Authorize or revoke an off-ramp partner. A partner may attest only for
     /// loans it services, and only while it remains authorized.
     pub fn set_partner(env: Env, admin: Address, partner: Address, authorized: bool) {
+        Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Partner(partner), &authorized);
+        let key = DataKey::Partner(partner);
+        env.storage().persistent().set(&key, &authorized);
+        Self::touch(&env, &key);
     }
 
     /// Publish a beneficiary's composite reputation score, in basis points of a
     /// perfect score. Computed off-chain from remittance and repayment history.
     pub fn set_reputation(env: Env, oracle: Address, beneficiary: BytesN<32>, score_bps: u32) {
+        Self::extend_instance(&env);
         oracle.require_auth();
         let stored: Address = env
             .storage()
@@ -186,16 +200,17 @@ impl LoanLedgerContract {
         if score_bps > BPS as u32 {
             panic_with_error!(&env, Error::InvalidScore);
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Reputation(beneficiary), &score_bps);
+        let key = DataKey::Reputation(beneficiary);
+        env.storage().persistent().set(&key, &score_bps);
+        Self::touch(&env, &key);
     }
 
     /// Move an open loan to a different partner, for when the servicing
     /// partner is offboarded. The new partner must already be authorized.
     pub fn reassign_partner(env: Env, admin: Address, loan_id: u64, new_partner: Address) {
+        Self::extend_instance(&env);
         Self::require_admin(&env, &admin);
-        if !Self::is_partner(env.clone(), new_partner.clone()) {
+        if !Self::authorized_partner(&env, &new_partner) {
             panic_with_error!(&env, Error::UnknownPartner);
         }
         let mut loan = Self::loan_of(&env, loan_id);
@@ -203,9 +218,7 @@ impl LoanLedgerContract {
             panic_with_error!(&env, Error::LoanNotActive);
         }
         loan.partner = new_partner;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Loan(loan_id), &loan);
+        Self::save_loan(&env, &loan);
     }
 
     // --- Origination ---
@@ -235,6 +248,7 @@ impl LoanLedgerContract {
         installment_count: u32,
         interval_secs: u64,
     ) -> u64 {
+        Self::extend_instance(&env);
         guarantor.require_auth();
         if principal_usd <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -242,7 +256,7 @@ impl LoanLedgerContract {
         if installment_count == 0 || interval_secs == 0 {
             panic_with_error!(&env, Error::InvalidSchedule);
         }
-        if !Self::is_partner(env.clone(), partner.clone()) {
+        if !Self::authorized_partner(&env, &partner) {
             panic_with_error!(&env, Error::UnknownPartner);
         }
 
@@ -253,6 +267,7 @@ impl LoanLedgerContract {
         }
 
         let ltv_bps = Self::required_ltv_bps(env.clone(), beneficiary.clone());
+        Self::touch(&env, &DataKey::Reputation(beneficiary.clone()));
         let collateral = principal_usd * ltv_bps as i128 / BPS;
 
         Self::vault(&env).lock_collateral(&env.current_contract_address(), &guarantor, &collateral);
@@ -286,8 +301,8 @@ impl LoanLedgerContract {
             status: LoanStatus::Active,
         };
 
-        env.storage().persistent().set(&DataKey::Loan(id), &loan);
         env.storage().persistent().set(&open_key, &id);
+        Self::save_loan(&env, &loan);
         id
     }
 
@@ -303,6 +318,7 @@ impl LoanLedgerContract {
     /// releasable = collateral * (repaid / principal) * (1 - safety_buffer)
     /// ```
     pub fn attest_repayment(env: Env, partner: Address, loan_id: u64, amount_usd: i128) -> i128 {
+        Self::extend_instance(&env);
         partner.require_auth();
         if amount_usd <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -312,7 +328,7 @@ impl LoanLedgerContract {
         // Only the partner servicing this loan may attest for it, and only while
         // it is still authorized. A registered partner cannot release collateral
         // on another partner's loans.
-        if partner != loan.partner || !Self::is_partner(env.clone(), partner) {
+        if partner != loan.partner || !Self::authorized_partner(&env, &partner) {
             panic_with_error!(&env, Error::NotAuthorized);
         }
         if !matches!(loan.status, LoanStatus::Active | LoanStatus::Grace) {
@@ -373,9 +389,7 @@ impl LoanLedgerContract {
             }
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Loan(loan_id), &loan);
+        Self::save_loan(&env, &loan);
         release_now
     }
 
@@ -383,6 +397,7 @@ impl LoanLedgerContract {
 
     /// Move an overdue loan into its grace period.
     pub fn mark_grace(env: Env, caller: Address, loan_id: u64) {
+        Self::extend_instance(&env);
         caller.require_auth();
         Self::require_engine(&env, &caller);
 
@@ -397,14 +412,13 @@ impl LoanLedgerContract {
         let config = Self::config(&env);
         loan.status = LoanStatus::Grace;
         loan.grace_expires_at = env.ledger().timestamp() + config.grace_period_secs;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Loan(loan_id), &loan);
+        Self::save_loan(&env, &loan);
     }
 
     /// Close a loan as defaulted. The engine calls this after it has settled the
     /// collateral, so the ledger records the full locked amount as accounted for.
     pub fn mark_defaulted(env: Env, caller: Address, loan_id: u64) {
+        Self::extend_instance(&env);
         caller.require_auth();
         Self::require_engine(&env, &caller);
 
@@ -418,9 +432,7 @@ impl LoanLedgerContract {
 
         loan.status = LoanStatus::Defaulted;
         loan.collateral_released = loan.collateral_locked;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Loan(loan_id), &loan);
+        Self::save_loan(&env, &loan);
         env.storage().persistent().remove(&DataKey::OpenLoan(
             loan.guarantor.clone(),
             loan.beneficiary.clone(),
@@ -430,21 +442,25 @@ impl LoanLedgerContract {
     // --- Views used by the LiquidationEngine ---
 
     pub fn is_overdue(env: Env, loan_id: u64) -> bool {
+        Self::extend_instance(&env);
         let loan = Self::loan_of(&env, loan_id);
         matches!(loan.status, LoanStatus::Active) && env.ledger().timestamp() > loan.next_due
     }
 
     pub fn is_grace_expired(env: Env, loan_id: u64) -> bool {
+        Self::extend_instance(&env);
         let loan = Self::loan_of(&env, loan_id);
         matches!(loan.status, LoanStatus::Grace) && env.ledger().timestamp() > loan.grace_expires_at
     }
 
     pub fn loan_guarantor(env: Env, loan_id: u64) -> Address {
+        Self::extend_instance(&env);
         Self::loan_of(&env, loan_id).guarantor
     }
 
     /// Principal still owed.
     pub fn loan_outstanding(env: Env, loan_id: u64) -> i128 {
+        Self::extend_instance(&env);
         let loan = Self::loan_of(&env, loan_id);
         let outstanding = loan.principal_usd - loan.total_repaid_usd;
         if outstanding > 0 {
@@ -456,6 +472,7 @@ impl LoanLedgerContract {
 
     /// Collateral still locked against this loan.
     pub fn loan_collateral_remaining(env: Env, loan_id: u64) -> i128 {
+        Self::extend_instance(&env);
         let loan = Self::loan_of(&env, loan_id);
         loan.collateral_locked - loan.collateral_released
     }
@@ -507,6 +524,12 @@ impl LoanLedgerContract {
 
     // --- Internals ---
 
+    /// Keep the contract instance, and with it the configuration and the
+    /// contract code, from being archived while the protocol is in use.
+    fn extend_instance(env: &Env) {
+        env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
+    }
+
     /// Installments fully covered by principal repaid so far.
     fn installments_covered(loan: &Loan) -> u32 {
         (loan.total_repaid_usd * loan.installment_count as i128 / loan.principal_usd) as u32
@@ -519,11 +542,55 @@ impl LoanLedgerContract {
             .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
     }
 
+    /// Load a loan and extend its lifetime. The engine's permissionless
+    /// cranks read loans through here, so calling them also keeps an idle
+    /// loan from being archived before it can be liquidated.
     fn loan_of(env: &Env, loan_id: u64) -> Loan {
+        let key = DataKey::Loan(loan_id);
+        let loan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(env, Error::LoanNotFound));
         env.storage()
             .persistent()
-            .get(&DataKey::Loan(loan_id))
-            .unwrap_or_else(|| panic_with_error!(env, Error::LoanNotFound))
+            .extend_ttl(&key, THRESHOLD, EXTEND_TO);
+        loan
+    }
+
+    /// Persist a loan and extend it, along with its open-loan marker while the
+    /// loan is still open.
+    fn save_loan(env: &Env, loan: &Loan) {
+        let key = DataKey::Loan(loan.id);
+        env.storage().persistent().set(&key, loan);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, THRESHOLD, EXTEND_TO);
+        Self::touch(
+            env,
+            &DataKey::OpenLoan(loan.guarantor.clone(), loan.beneficiary.clone()),
+        );
+    }
+
+    /// Extend a persistent entry if it exists.
+    fn touch(env: &Env, key: &DataKey) {
+        if env.storage().persistent().has(key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(key, THRESHOLD, EXTEND_TO);
+        }
+    }
+
+    /// Whether a partner is authorized, renewing its registration on use.
+    fn authorized_partner(env: &Env, partner: &Address) -> bool {
+        let key = DataKey::Partner(partner.clone());
+        match env.storage().persistent().get::<_, bool>(&key) {
+            Some(authorized) => {
+                Self::touch(env, &key);
+                authorized
+            }
+            None => false,
+        }
     }
 
     fn vault(env: &Env) -> VaultClient<'_> {

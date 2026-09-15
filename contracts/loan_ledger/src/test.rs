@@ -3,7 +3,7 @@
 use super::*;
 use rc_guarantor_vault::{GuarantorVaultContract, GuarantorVaultContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    testutils::{storage::Persistent as _, Address as _, Ledger as _},
     token, Env,
 };
 
@@ -525,4 +525,47 @@ fn test_constructor_rejects_invalid_config() {
         LoanLedgerContract,
         (admin, vault, 11_000u32, 15_000u32, 500u32, 14 * DAY),
     );
+}
+
+fn persistent_ttl(s: &Setup, key: &DataKey) -> u32 {
+    s.env.as_contract(&s.ledger.address, || {
+        s.env.storage().persistent().get_ttl(key)
+    })
+}
+
+#[test]
+fn test_loan_lifetime_is_extended_by_use_and_by_the_crank() {
+    let s = setup();
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
+
+    // Origination extends the loan, its open-loan marker, and the partner
+    // registration it depends on.
+    let loan_key = DataKey::Loan(id);
+    let open_key = DataKey::OpenLoan(s.guarantor.clone(), s.beneficiary.clone());
+    assert_eq!(persistent_ttl(&s, &loan_key), EXTEND_TO);
+    assert_eq!(persistent_ttl(&s, &open_key), EXTEND_TO);
+    assert_eq!(
+        persistent_ttl(&s, &DataKey::Partner(s.partner.clone())),
+        EXTEND_TO
+    );
+
+    // A loan left untouched for forty days ages below the renewal threshold.
+    let aged = 40 * DAY_IN_LEDGERS;
+    s.env
+        .ledger()
+        .set_sequence_number(s.env.ledger().sequence() + aged);
+    assert_eq!(persistent_ttl(&s, &loan_key), EXTEND_TO - aged);
+
+    // The read path the liquidation engine's permissionless crank uses renews
+    // it, so anyone can keep an idle loan from being archived before it can
+    // be liquidated.
+    s.ledger.is_overdue(&id);
+    assert_eq!(persistent_ttl(&s, &loan_key), EXTEND_TO);
 }

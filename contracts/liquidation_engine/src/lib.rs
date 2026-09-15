@@ -15,6 +15,15 @@ use soroban_sdk::{
     Env,
 };
 
+/// Ledgers per day at Stellar's 5-second ledger close time.
+const DAY_IN_LEDGERS: u32 = 17_280;
+/// Storage lifetimes, in ledgers. Entries are extended to about 120 days
+/// whenever they fall below about 90, so they stay live while in use without
+/// paying rent on every call. Both are well under the network's maximum entry
+/// lifetime of about 180 days.
+const EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
+const THRESHOLD: u32 = 90 * DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -60,6 +69,7 @@ impl LiquidationEngineContract {
     /// separate initialize call for anyone to front-run between deployment and
     /// setup, so nobody else can claim the admin role.
     pub fn __constructor(env: Env, admin: Address, vault: Address, loan_ledger: Address) {
+        Self::extend_instance(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage()
@@ -69,6 +79,7 @@ impl LiquidationEngineContract {
 
     /// Start the grace period on an overdue loan. Permissionless.
     pub fn flag_overdue(env: Env, loan_id: u64) {
+        Self::extend_instance(&env);
         let ledger = Self::ledger(&env);
         if !ledger.is_overdue(&loan_id) {
             panic_with_error!(&env, Error::NotOverdue);
@@ -82,6 +93,7 @@ impl LiquidationEngineContract {
     /// is actually locked — and returns the remainder to the guarantor. Returns
     /// the amount forfeited.
     pub fn liquidate(env: Env, loan_id: u64) -> i128 {
+        Self::extend_instance(&env);
         let ledger = Self::ledger(&env);
         if !ledger.is_grace_expired(&loan_id) {
             panic_with_error!(&env, Error::GraceNotExpired);
@@ -114,6 +126,7 @@ impl LiquidationEngineContract {
     /// Convenience crank: advance whichever transition the loan is due for.
     /// Returns true if it did something.
     pub fn poke(env: Env, loan_id: u64) -> bool {
+        Self::extend_instance(&env);
         let ledger = Self::ledger(&env);
         if ledger.is_overdue(&loan_id) {
             ledger.mark_grace(&env.current_contract_address(), &loan_id);
@@ -141,6 +154,12 @@ impl LiquidationEngineContract {
     }
 
     // --- Internals ---
+
+    /// Keep the contract instance, and with it the configuration and the
+    /// contract code, from being archived while the protocol is in use.
+    fn extend_instance(env: &Env) {
+        env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
+    }
 
     fn ledger(env: &Env) -> LedgerClient<'_> {
         let addr: Address = env
