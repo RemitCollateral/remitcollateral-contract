@@ -24,7 +24,7 @@ This repository holds the **Soroban smart contracts only** — the settlement la
 
 ### What is deliberately not on-chain
 
-The beneficiary has no wallet and never appears as an `Address`. They are identified by a 32-byte handle the backend derives from their phone number and the partner's KYC reference, so no personally identifying data reaches the ledger. Reputation scoring runs off-chain over remittance and repayment history; only the resulting score is published on-chain, by a registered oracle, because it is what sets the LTV.
+The beneficiary has no wallet and never appears as an `Address`. They are identified by a 32-byte handle the backend derives from their phone number and the partner's KYC reference with a keyed hash (HMAC), so no personally identifying data reaches the ledger and the handle cannot be reversed by guessing phone numbers. Reputation scoring runs off-chain over remittance and repayment history; only the resulting score is published on-chain, by a registered oracle, because it is what sets the LTV.
 
 ### Trust boundary
 
@@ -104,7 +104,7 @@ ORACLE=<reputation oracle address> \
 
 `scripts/smoke-testnet.sh` then exercises a live deployment end to end, and passes against the current testnet code: deposit and origination; the partner alone, the verifier alone, and a different co-signed partner all refused; a co-signed repayment releasing collateral; an overdue loan cranked into grace; full repayment; the admin role moved to the council, with the old key refused; a single council signature refused; an upgrade that cannot run before its timelock, then runs once the council executes it, with the vault's balances intact; and a withdrawal through the upgraded code.
 
-The co-signing helper, `scripts/attest.mjs`, is also the reference for how the backend submits attestations: the verifier sends the transaction and the partner signs its own authorization entry. Run `npm install` in `scripts/` before using it.
+The co-signing helper, `scripts/attest.mjs`, shows the attestation flow: the verifier sends the transaction and the partner signs its own authorization entry. The backend's chain client (`src/chain` in `remitcollateral-backend`) does the same. Run `npm install` in `scripts/` before using the helper.
 
 ### Multisig admin
 
@@ -159,7 +159,8 @@ These are the protocol's remaining trust assumptions and gaps, stated plainly. T
 * **No events yet.** Scheduled changes and attestations are visible by reading contract state, not by subscribing to events, so monitoring the timelock means polling `get_scheduled_action`.
 * **The oracle sets collateral requirements.** A compromised oracle can push every new loan's LTV down to the 110% floor. The floor bounds the damage but does not remove it.
 * **Liquidation proceeds go to a platform-controlled address**, not through a market. Recovering the outstanding balance off-chain is outside the protocol.
-* **One grace period for every loan**, fixed when the ledger is deployed.
+* **One grace period for every loan**, fixed when the ledger is deployed (14 days on the testnet deployment). The backend's `GRACE_PERIOD_DAYS` must match it.
+* **No way to cancel a loan whose disbursement fails.** Collateral is locked when a loan is originated, before the partner pays out. If the payout then fails, nothing can release it: the loan would eventually go overdue and be liquidated although no money reached the beneficiary. A cancellation co-signed by the partner and a verifier, allowed only before any repayment, would close this.
 * **Not audited.** The contracts have unit tests and a testnet smoke test, not an independent security review. Do not hold real funds in them until they have had one.
 
 ## Roadmap
@@ -167,6 +168,7 @@ These are the protocol's remaining trust assumptions and gaps, stated plainly. T
 * **Delayed collateral release:** hold released collateral for a dispute window before it becomes withdrawable, so a colluding partner and verifier can be caught.
 * **Events:** emit events for attestations, scheduled and executed admin actions, and defaults, so the timelock can be monitored rather than polled.
 * **Timelock the remaining admin powers**, or split them across roles with narrower keys.
+* **Cancel undisbursed loans:** a partner-and-verifier co-signed cancellation that releases the collateral of a loan whose payout failed.
 * **Per-loan grace configuration:** let the grace period vary with loan size or beneficiary reputation instead of being global.
 * **DEX-based liquidation:** settle forfeited collateral through a swap rather than transferring USDC to a platform-controlled address.
 * **On-chain reputation derivation:** move part of the scoring on-chain so the LTV is reproducible without trusting the oracle.
