@@ -38,6 +38,7 @@ pub enum Error {
     NoPendingAction = 10,
     ActionPending = 11,
     TimelockNotExpired = 12,
+    ReentrancyGuard = 13,
 }
 
 /// A single guarantor's collateral position.
@@ -63,6 +64,7 @@ pub enum DataKey {
     PendingAdmin,
     TimelockSecs,
     Scheduled,
+    ReentrancyLock,
 }
 
 /// A sensitive admin change that must wait out the timelock before it runs.
@@ -81,6 +83,24 @@ pub struct ScheduledAction {
     pub action: Action,
     /// Earliest ledger time at which the action may execute.
     pub eta: u64,
+}
+
+struct ReentrancyGuard<'a>(&'a Env);
+
+impl<'a> ReentrancyGuard<'a> {
+    fn enter(env: &'a Env) -> Self {
+        if env.storage().instance().has(&DataKey::ReentrancyLock) {
+            panic_with_error!(env, Error::ReentrancyGuard);
+        }
+        env.storage().instance().set(&DataKey::ReentrancyLock, &true);
+        Self(env)
+    }
+}
+
+impl<'a> Drop for ReentrancyGuard<'a> {
+    fn drop(&mut self) {
+        self.0.storage().instance().remove(&DataKey::ReentrancyLock);
+    }
 }
 
 #[contract]
@@ -236,22 +256,24 @@ impl GuarantorVaultContract {
 
     /// Deposit USDC into the caller's own vault.
     pub fn deposit(env: Env, guarantor: Address, amount: i128) {
+        let _guard = ReentrancyGuard::enter(&env);
         Self::extend_instance(&env);
         guarantor.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
 
-        let usdc = Self::usdc_client(&env);
-        usdc.transfer(&guarantor, &env.current_contract_address(), &amount);
-
         let mut vault = Self::vault_of(&env, &guarantor);
         vault.collateral_balance += amount;
         Self::save(&env, &vault);
+
+        let usdc = Self::usdc_client(&env);
+        usdc.transfer(&guarantor, &env.current_contract_address(), &amount);
     }
 
     /// Withdraw unlocked collateral. Collateral backing an active loan cannot be withdrawn.
     pub fn withdraw(env: Env, guarantor: Address, amount: i128) {
+        let _guard = ReentrancyGuard::enter(&env);
         Self::extend_instance(&env);
         guarantor.require_auth();
         if amount <= 0 {
@@ -275,6 +297,7 @@ impl GuarantorVaultContract {
 
     /// Reserve collateral against a new loan. LoanLedger only.
     pub fn lock_collateral(env: Env, caller: Address, guarantor: Address, amount: i128) {
+        let _guard = ReentrancyGuard::enter(&env);
         Self::extend_instance(&env);
         caller.require_auth();
         Self::require_ledger(&env, &caller);
@@ -296,6 +319,7 @@ impl GuarantorVaultContract {
     /// LiquidationEngine — the ledger releases as repayments land, the engine
     /// releases whatever a liquidation did not consume.
     pub fn release_collateral(env: Env, caller: Address, guarantor: Address, amount: i128) {
+        let _guard = ReentrancyGuard::enter(&env);
         Self::extend_instance(&env);
         caller.require_auth();
         Self::require_ledger_or_engine(&env, &caller);
@@ -315,6 +339,7 @@ impl GuarantorVaultContract {
     /// Seize locked collateral and move the USDC to the settlement address.
     /// LiquidationEngine only.
     pub fn forfeit_collateral(env: Env, caller: Address, guarantor: Address, amount: i128) {
+        let _guard = ReentrancyGuard::enter(&env);
         Self::extend_instance(&env);
         caller.require_auth();
         Self::require_engine(&env, &caller);
