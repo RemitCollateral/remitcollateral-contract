@@ -11,7 +11,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, BytesN,
-    Env,
+    Env, Symbol,
 };
 
 /// Ledgers per day at Stellar's 5-second ledger close time.
@@ -101,6 +101,15 @@ impl<'a> Drop for ReentrancyGuard<'a> {
     fn drop(&mut self) {
         self.0.storage().instance().remove(&DataKey::ReentrancyLock);
     }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralEvent {
+    pub guarantor: Address,
+    pub amount: i128,
+    pub collateral_balance: i128,
+    pub locked_amount: i128,
 }
 
 #[contract]
@@ -275,6 +284,16 @@ impl GuarantorVaultContract {
         let mut vault = Self::vault_of(&env, &guarantor);
         vault.collateral_balance += amount;
         Self::save(&env, &vault);
+
+        env.events().publish(
+            (Symbol::new(&env, "vault"), Symbol::new(&env, "deposit")),
+            CollateralEvent {
+                guarantor: guarantor.clone(),
+                amount,
+                collateral_balance: vault.collateral_balance,
+                locked_amount: vault.locked_amount,
+            },
+        );
     }
 
     /// Withdraw unlocked collateral. Collateral backing an active loan cannot be withdrawn.
@@ -297,6 +316,16 @@ impl GuarantorVaultContract {
 
         let usdc = Self::usdc_client(&env);
         usdc.transfer(&env.current_contract_address(), &guarantor, &amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "vault"), Symbol::new(&env, "withdraw")),
+            CollateralEvent {
+                guarantor: guarantor.clone(),
+                amount,
+                collateral_balance: vault.collateral_balance,
+                locked_amount: vault.locked_amount,
+            },
+        );
     }
 
     // --- Protocol operations ---
@@ -319,6 +348,16 @@ impl GuarantorVaultContract {
 
         vault.locked_amount += amount;
         Self::save(&env, &vault);
+
+        env.events().publish(
+            (Symbol::new(&env, "vault"), Symbol::new(&env, "lock")),
+            CollateralEvent {
+                guarantor: guarantor.clone(),
+                amount,
+                collateral_balance: vault.collateral_balance,
+                locked_amount: vault.locked_amount,
+            },
+        );
     }
 
     /// Return collateral to the guarantor's available balance. LoanLedger or
@@ -340,6 +379,16 @@ impl GuarantorVaultContract {
 
         vault.locked_amount -= amount;
         Self::save(&env, &vault);
+
+        env.events().publish(
+            (Symbol::new(&env, "vault"), Symbol::new(&env, "release")),
+            CollateralEvent {
+                guarantor: guarantor.clone(),
+                amount,
+                collateral_balance: vault.collateral_balance,
+                locked_amount: vault.locked_amount,
+            },
+        );
     }
 
     /// Seize locked collateral and move the USDC to the settlement address.
@@ -369,6 +418,16 @@ impl GuarantorVaultContract {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         let usdc = Self::usdc_client(&env);
         usdc.transfer(&env.current_contract_address(), &settlement, &amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "vault"), Symbol::new(&env, "forfeit")),
+            CollateralEvent {
+                guarantor: guarantor.clone(),
+                amount,
+                collateral_balance: vault.collateral_balance,
+                locked_amount: vault.locked_amount,
+            },
+        );
     }
 
     // --- Getters ---
