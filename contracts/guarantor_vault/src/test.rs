@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{
         storage::{Instance as _, Persistent as _},
-        Address as _, Ledger as _,
+        Address as _, Events as _, Ledger as _,
     },
     token, BytesN, Env,
 };
@@ -382,6 +382,41 @@ fn test_deposit_verifies_exact_token_transfer_balance() {
         s.vault.try_deposit(&s.guarantor, &-10),
         Err(Ok(e)) if e == invalid_amount
     ));
+}
+
+#[test]
+fn test_standardized_structured_events_emission() {
+    let s = setup();
+
+    // Deposit emits ("vault", "deposit")
+    s.vault.deposit(&s.guarantor, &1_000);
+    let events = s.env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(last_event.0, s.vault.address);
+
+    // Lock emits ("vault", "lock")
+    s.vault.lock_collateral(&s.ledger, &s.guarantor, &600);
+    let events = s.env.events().all();
+    let lock_event = events.last().unwrap();
+    assert_eq!(lock_event.0, s.vault.address);
+
+    // Release emits ("vault", "release")
+    s.vault.release_collateral(&s.ledger, &s.guarantor, &200);
+    let events = s.env.events().all();
+    let release_event = events.last().unwrap();
+    assert_eq!(release_event.0, s.vault.address);
+
+    // Forfeit emits ("vault", "forfeit")
+    s.vault.forfeit_collateral(&s.engine, &s.guarantor, &400);
+    let events = s.env.events().all();
+    let forfeit_event = events.last().unwrap();
+    assert_eq!(forfeit_event.0, s.vault.address);
+
+    // Withdraw emits ("vault", "withdraw")
+    s.vault.withdraw(&s.guarantor, &200);
+    let events = s.env.events().all();
+    let withdraw_event = events.last().unwrap();
+    assert_eq!(withdraw_event.0, s.vault.address);
 }
 
 
