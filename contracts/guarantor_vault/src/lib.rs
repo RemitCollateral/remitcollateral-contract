@@ -27,18 +27,18 @@ const THRESHOLD: u32 = 90 * DAY_IN_LEDGERS;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    NotInitialized = 2,
-    NotAuthorized = 3,
-    InvalidAmount = 4,
-    InsufficientAvailable = 5,
-    InsufficientLocked = 6,
-    LedgerNotSet = 7,
-    EngineNotSet = 8,
-    AlreadySet = 9,
-    NoPendingAction = 10,
-    ActionPending = 11,
-    TimelockNotExpired = 12,
-    ReentrancyGuard = 13,
+    NotInitialized = 101,
+    NotAuthorized = 102,
+    InvalidAmount = 103,
+    InsufficientAvailable = 104,
+    InsufficientLocked = 105,
+    LedgerNotSet = 106,
+    EngineNotSet = 107,
+    AlreadySet = 108,
+    NoPendingAction = 109,
+    ActionPending = 110,
+    TimelockNotExpired = 111,
+    ReentrancyGuard = 112,
 }
 
 /// A single guarantor's collateral position.
