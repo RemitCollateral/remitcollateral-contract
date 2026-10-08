@@ -481,9 +481,15 @@ impl GuarantorVaultContract {
     }
 
     fn vault_of(env: &Env, guarantor: &Address) -> Vault {
+        let key = DataKey::Vault(guarantor.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, THRESHOLD, EXTEND_TO);
+        }
         env.storage()
             .persistent()
-            .get(&DataKey::Vault(guarantor.clone()))
+            .get(&key)
             .unwrap_or(Vault {
                 guarantor: guarantor.clone(),
                 collateral_balance: 0,

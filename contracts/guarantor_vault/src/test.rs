@@ -215,6 +215,14 @@ fn test_vault_lifetime_is_extended_on_use() {
     // ...and its next use renews it to the full window again.
     s.vault.lock_collateral(&s.ledger, &s.guarantor, &1);
     assert_eq!(vault_ttl(&s, &s.guarantor), EXTEND_TO);
+
+    // Aging again and querying balance also renews the TTL
+    s.env
+        .ledger()
+        .set_sequence_number(s.env.ledger().sequence() + aged);
+    assert_eq!(vault_ttl(&s, &s.guarantor), EXTEND_TO - aged);
+    let _ = s.vault.get_balance(&s.guarantor);
+    assert_eq!(vault_ttl(&s, &s.guarantor), EXTEND_TO);
 }
 
 #[test]
