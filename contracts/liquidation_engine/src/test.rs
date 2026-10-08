@@ -257,3 +257,75 @@ fn test_admin_handover_is_two_step() {
     ));
     s.engine.schedule_action(&new_admin, &upgrade);
 }
+
+#[test]
+fn test_pause_and_unpause_circuit_breaker() {
+    let s = setup();
+    let admin = s.engine.get_admin();
+    let stranger = Address::generate(&s.env);
+    let paused_err = soroban_sdk::Error::from(Error::Paused);
+
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
+
+    // Initial state is unpaused
+    assert!(!s.engine.is_paused());
+
+    // Stranger cannot pause
+    assert!(s.engine.try_pause(&stranger).is_err());
+
+    // Admin pauses the circuit breaker
+    s.engine.pause(&admin);
+    assert!(s.engine.is_paused());
+
+    // Miss installment to reach overdue
+    s.env.ledger().set_timestamp(31 * DAY);
+
+    // Crank poke returns false without executing when paused
+    assert!(!s.engine.poke(&id));
+
+    // flag_overdue fails with Paused error
+    assert!(matches!(
+        s.engine.try_flag_overdue(&id),
+        Err(Ok(e)) if e == paused_err
+    ));
+
+    // Guarantor is still able to withdraw available collateral
+    assert_eq!(s.vault.get_available(&s.guarantor), 500_000 - 15_000);
+
+    // Stranger cannot unpause
+    assert!(s.engine.try_unpause(&stranger).is_err());
+
+    // Admin unpauses
+    s.engine.unpause(&admin);
+    assert!(!s.engine.is_paused());
+
+    // Transition to grace via poke
+    assert!(s.engine.poke(&id));
+    assert!(matches!(
+        s.ledger.get_loan(&id).unwrap().status,
+        LoanStatus::Grace
+    ));
+
+    // Pause again when grace expires
+    s.env.ledger().set_timestamp(46 * DAY);
+    s.engine.pause(&admin);
+    assert!(s.engine.is_paused());
+
+    // Liquidate is blocked while paused
+    assert!(matches!(
+        s.engine.try_liquidate(&id),
+        Err(Ok(e)) if e == paused_err
+    ));
+
+    // Unpause and liquidate succeeds
+    s.engine.unpause(&admin);
+    let forfeited = s.engine.liquidate(&id);
+    assert_eq!(forfeited, 10_000);
+}
