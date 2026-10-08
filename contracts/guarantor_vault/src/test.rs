@@ -353,3 +353,35 @@ fn test_reentrancy_guard_blocks_nested_calls() {
     assert!(s.vault.try_deposit(&s.guarantor, &100).is_ok());
 }
 
+#[test]
+fn test_deposit_verifies_exact_token_transfer_balance() {
+    let s = setup();
+    let initial_vault_balance = s.usdc.balance(&s.vault.address);
+    let initial_guarantor_balance = s.usdc.balance(&s.guarantor);
+
+    // Deposit verifies and credits exactly 250 USDC
+    s.vault.deposit(&s.guarantor, &250);
+
+    assert_eq!(
+        s.usdc.balance(&s.vault.address),
+        initial_vault_balance + 250
+    );
+    assert_eq!(
+        s.usdc.balance(&s.guarantor),
+        initial_guarantor_balance - 250
+    );
+    assert_eq!(s.vault.get_vault(&s.guarantor).collateral_balance, 250);
+
+    // Negative or zero deposit rejected
+    let invalid_amount = soroban_sdk::Error::from(Error::InvalidAmount);
+    assert!(matches!(
+        s.vault.try_deposit(&s.guarantor, &0),
+        Err(Ok(e)) if e == invalid_amount
+    ));
+    assert!(matches!(
+        s.vault.try_deposit(&s.guarantor, &-10),
+        Err(Ok(e)) if e == invalid_amount
+    ));
+}
+
+
