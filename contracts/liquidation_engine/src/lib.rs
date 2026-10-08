@@ -35,6 +35,7 @@ pub enum Error {
     NoPendingAction = 305,
     ActionPending = 306,
     TimelockNotExpired = 307,
+    Paused = 308,
 }
 
 #[contracttype]
@@ -45,6 +46,7 @@ pub enum DataKey {
     PendingAdmin,
     TimelockSecs,
     Scheduled,
+    IsPaused,
 }
 
 /// A sensitive admin change that must wait out the timelock before it runs.
@@ -198,11 +200,35 @@ impl LiquidationEngineContract {
         env.storage().instance().remove(&DataKey::PendingAdmin);
     }
 
+    /// Pause the liquidation engine in an emergency.
+    pub fn pause(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        Self::extend_instance(&env);
+        env.storage().instance().set(&DataKey::IsPaused, &true);
+    }
+
+    /// Resume normal liquidation operations.
+    pub fn unpause(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        Self::extend_instance(&env);
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+    }
+
     // --- Cranks ---
 
     /// Start the grace period on an overdue loan. Permissionless.
     pub fn flag_overdue(env: Env, loan_id: u64) {
         Self::extend_instance(&env);
+        if Self::is_paused(env.clone()) {
+            panic_with_error!(&env, Error::Paused);
+        }
         let ledger = Self::ledger(&env);
         if !ledger.is_overdue(&loan_id) {
             panic_with_error!(&env, Error::NotOverdue);
@@ -217,6 +243,9 @@ impl LiquidationEngineContract {
     /// the amount forfeited.
     pub fn liquidate(env: Env, loan_id: u64) -> i128 {
         Self::extend_instance(&env);
+        if Self::is_paused(env.clone()) {
+            panic_with_error!(&env, Error::Paused);
+        }
         let ledger = Self::ledger(&env);
         if !ledger.is_grace_expired(&loan_id) {
             panic_with_error!(&env, Error::GraceNotExpired);
@@ -250,6 +279,9 @@ impl LiquidationEngineContract {
     /// Returns true if it did something.
     pub fn poke(env: Env, loan_id: u64) -> bool {
         Self::extend_instance(&env);
+        if Self::is_paused(env.clone()) {
+            return false;
+        }
         let ledger = Self::ledger(&env);
         if ledger.is_overdue(&loan_id) {
             ledger.mark_grace(&env.current_contract_address(), &loan_id);
