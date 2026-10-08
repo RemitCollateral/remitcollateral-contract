@@ -263,12 +263,18 @@ impl GuarantorVaultContract {
             panic_with_error!(&env, Error::InvalidAmount);
         }
 
+        let usdc = Self::usdc_client(&env);
+        let balance_before = usdc.balance(&env.current_contract_address());
+        usdc.transfer(&guarantor, &env.current_contract_address(), &amount);
+        let balance_after = usdc.balance(&env.current_contract_address());
+
+        if balance_after - balance_before != amount {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
         let mut vault = Self::vault_of(&env, &guarantor);
         vault.collateral_balance += amount;
         Self::save(&env, &vault);
-
-        let usdc = Self::usdc_client(&env);
-        usdc.transfer(&guarantor, &env.current_contract_address(), &amount);
     }
 
     /// Withdraw unlocked collateral. Collateral backing an active loan cannot be withdrawn.
