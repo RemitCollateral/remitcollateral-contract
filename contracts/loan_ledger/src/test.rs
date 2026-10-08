@@ -730,3 +730,34 @@ fn test_engine_wiring_is_set_once() {
         .try_set_liquidation_engine(&s.admin, &stranger)
         .is_err());
 }
+
+#[test]
+fn test_get_loans_range_pagination() {
+    let s = setup();
+    let b1 = BytesN::from_array(&s.env, &[1u8; 32]);
+    let b2 = BytesN::from_array(&s.env, &[2u8; 32]);
+    let b3 = BytesN::from_array(&s.env, &[3u8; 32]);
+
+    let id1 = s.ledger.originate(&s.guarantor, &b1, &s.partner, &1_000, &2, &DAY);
+    let id2 = s.ledger.originate(&s.guarantor, &b2, &s.partner, &2_000, &2, &DAY);
+    let id3 = s.ledger.originate(&s.guarantor, &b3, &s.partner, &3_000, &2, &DAY);
+
+    assert_eq!(s.ledger.get_loan_count(), 3);
+
+    // Query 2 items from start_id = 1
+    let page1 = s.ledger.get_loans_range(&1, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap().id, id1);
+    assert_eq!(page1.get(1).unwrap().id, id2);
+
+    // Query from start_id = 2 with large limit, bounded by remaining loans
+    let page2 = s.ledger.get_loans_range(&2, &10);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().id, id2);
+    assert_eq!(page2.get(1).unwrap().id, id3);
+
+    // Out-of-bounds start_id returns empty
+    assert_eq!(s.ledger.get_loans_range(&0, &10).len(), 0);
+    assert_eq!(s.ledger.get_loans_range(&100, &10).len(), 0);
+}
+

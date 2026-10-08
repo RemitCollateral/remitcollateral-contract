@@ -669,6 +669,27 @@ impl LoanLedgerContract {
             .unwrap_or(0)
     }
 
+    /// Returns a paginated range of loans from `start_id`, bounded by `limit` (max 50).
+    pub fn get_loans_range(env: Env, start_id: u64, limit: u32) -> soroban_sdk::Vec<Loan> {
+        let max_limit = 50;
+        let actual_limit = limit.min(max_limit);
+        let total = Self::get_loan_count(env.clone());
+        let mut results = soroban_sdk::Vec::new(&env);
+
+        if start_id == 0 || start_id > total {
+            return results;
+        }
+
+        let end_id = (start_id + actual_limit as u64).min(total + 1);
+        for id in start_id..end_id {
+            if let Some(loan) = Self::get_loan(env.clone(), id) {
+                results.push_back(loan);
+            }
+        }
+
+        results
+    }
+
     pub fn get_admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).unwrap()
     }
