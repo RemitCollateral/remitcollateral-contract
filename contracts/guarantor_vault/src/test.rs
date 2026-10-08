@@ -304,3 +304,52 @@ fn test_admin_handover_is_two_step() {
     // A completed handover cannot be replayed.
     assert!(s.vault.try_accept_admin(&new_admin).is_err());
 }
+
+#[test]
+fn test_reentrancy_guard_blocks_nested_calls() {
+    let s = setup();
+    let reentrancy_error = soroban_sdk::Error::from(Error::ReentrancyGuard);
+
+    // Simulate an ongoing call holding the reentrancy lock
+    s.env
+        .as_contract(&s.vault.address, || {
+            s.env
+                .storage()
+                .instance()
+                .set(&crate::DataKey::ReentrancyLock, &true);
+        });
+
+    // Any attempt to re-enter a protected method is rejected
+    assert!(matches!(
+        s.vault.try_deposit(&s.guarantor, &100),
+        Err(Ok(e)) if e == reentrancy_error
+    ));
+    assert!(matches!(
+        s.vault.try_withdraw(&s.guarantor, &50),
+        Err(Ok(e)) if e == reentrancy_error
+    ));
+    assert!(matches!(
+        s.vault.try_lock_collateral(&s.ledger, &s.guarantor, &50),
+        Err(Ok(e)) if e == reentrancy_error
+    ));
+    assert!(matches!(
+        s.vault.try_release_collateral(&s.ledger, &s.guarantor, &50),
+        Err(Ok(e)) if e == reentrancy_error
+    ));
+    assert!(matches!(
+        s.vault.try_forfeit_collateral(&s.engine, &s.guarantor, &50),
+        Err(Ok(e)) if e == reentrancy_error
+    ));
+
+    // Clearing the lock allows normal operations again
+    s.env
+        .as_contract(&s.vault.address, || {
+            s.env
+                .storage()
+                .instance()
+                .remove(&crate::DataKey::ReentrancyLock);
+        });
+
+    assert!(s.vault.try_deposit(&s.guarantor, &100).is_ok());
+}
+
