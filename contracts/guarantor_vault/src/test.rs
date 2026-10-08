@@ -427,4 +427,37 @@ fn test_standardized_structured_events_emission() {
     assert_eq!(withdraw_event.0, s.vault.address);
 }
 
+#[test]
+fn test_two_step_timelocked_upgrade_execution() {
+    let s = setup();
+    let upgrade = Action::Upgrade(BytesN::from_array(&s.env, &[42u8; 32]));
+    let too_early = soroban_sdk::Error::from(Error::TimelockNotExpired);
+
+    // Step 1: Commit / schedule upgrade action
+    s.vault.schedule_action(&s.admin, &upgrade);
+    let eta = s.vault.get_scheduled_action().unwrap().eta;
+    assert_eq!(eta, s.env.ledger().timestamp() + TIMELOCK);
+
+    // Verification: Cannot execute before eta
+    s.env.ledger().set_timestamp(eta - 1);
+    assert!(matches!(
+        s.vault.try_execute_action(&s.admin),
+        Err(Ok(e)) if e == too_early
+    ));
+
+    // Cannot execute at eta - 100
+    s.env.ledger().set_timestamp(eta - 100);
+    assert!(matches!(
+        s.vault.try_execute_action(&s.admin),
+        Err(Ok(e)) if e == too_early
+    ));
+
+    // Step 2: Once timelock delay has elapsed, timelock check passes
+    s.env.ledger().set_timestamp(eta);
+    assert!(!matches!(
+        s.vault.try_execute_action(&s.admin),
+        Err(Ok(e)) if e == too_early
+    ));
+}
+
 
