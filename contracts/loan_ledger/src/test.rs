@@ -846,3 +846,49 @@ fn test_collateral_ratio_invariant_sweeps() {
     }
 }
 
+#[test]
+fn test_loan_parameter_bounds() {
+    let s = setup();
+    let invalid_sched = soroban_sdk::Error::from(Error::InvalidSchedule);
+
+    // 0 installments is rejected
+    let b1 = BytesN::from_array(&s.env, &[21u8; 32]);
+    assert!(matches!(
+        s.ledger.try_originate(&s.guarantor, &b1, &s.partner, &1_000, &0, &DAY),
+        Err(Ok(e)) if e == invalid_sched
+    ));
+
+    // Exceeding 52 installments is rejected
+    let b2 = BytesN::from_array(&s.env, &[22u8; 32]);
+    assert!(matches!(
+        s.ledger.try_originate(&s.guarantor, &b2, &s.partner, &1_000, &53, &DAY),
+        Err(Ok(e)) if e == invalid_sched
+    ));
+
+    // Interval less than 1 day is rejected
+    let b3 = BytesN::from_array(&s.env, &[23u8; 32]);
+    assert!(matches!(
+        s.ledger.try_originate(&s.guarantor, &b3, &s.partner, &1_000, &4, &(DAY - 1)),
+        Err(Ok(e)) if e == invalid_sched
+    ));
+
+    // Interval greater than 90 days is rejected
+    let b4 = BytesN::from_array(&s.env, &[24u8; 32]);
+    assert!(matches!(
+        s.ledger.try_originate(&s.guarantor, &b4, &s.partner, &1_000, &4, &(91 * DAY)),
+        Err(Ok(e)) if e == invalid_sched
+    ));
+
+    // Tenor exceeding 365 days is rejected (e.g. 10 installments * 40 days = 400 days)
+    let b5 = BytesN::from_array(&s.env, &[25u8; 32]);
+    assert!(matches!(
+        s.ledger.try_originate(&s.guarantor, &b5, &s.partner, &1_000, &10, &(40 * DAY)),
+        Err(Ok(e)) if e == invalid_sched
+    ));
+
+    // Valid parameters (e.g. 52 weekly installments = 364 days tenor) succeeds
+    let b6 = BytesN::from_array(&s.env, &[26u8; 32]);
+    let id = s.ledger.originate(&s.guarantor, &b6, &s.partner, &1_000, &52, &(7 * DAY));
+    assert!(id > 0);
+}
+
