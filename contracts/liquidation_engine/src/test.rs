@@ -329,3 +329,77 @@ fn test_pause_and_unpause_circuit_breaker() {
     let forfeited = s.engine.liquidate(&id);
     assert_eq!(forfeited, 10_000);
 }
+
+#[test]
+fn test_negative_liquidation_scenarios() {
+    let s = setup();
+    let not_overdue_err = soroban_sdk::Error::from(Error::NotOverdue);
+    let grace_not_expired_err = soroban_sdk::Error::from(Error::GraceNotExpired);
+
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &s.beneficiary,
+        &s.partner,
+        &10_000,
+        &4,
+        &(30 * DAY),
+    );
+
+    // Scenario 1: Active loan that is current cannot be flagged overdue or liquidated
+    assert!(matches!(
+        s.engine.try_flag_overdue(&id),
+        Err(Ok(e)) if e == not_overdue_err
+    ));
+    assert!(matches!(
+        s.engine.try_liquidate(&id),
+        Err(Ok(e)) if e == grace_not_expired_err
+    ));
+
+    // Scenario 2: Active loan overdue but NOT flagged as Grace cannot be liquidated directly
+    s.env.ledger().set_timestamp(35 * DAY);
+    // Loan is overdue, but status is still Active, so grace is not expired (it hasn't started)
+    assert!(matches!(
+        s.engine.try_liquidate(&id),
+        Err(Ok(e)) if e == grace_not_expired_err
+    ));
+
+    // Flag overdue moves it to Grace
+    s.engine.flag_overdue(&id);
+    assert!(matches!(
+        s.ledger.get_loan(&id).unwrap().status,
+        LoanStatus::Grace
+    ));
+
+    // Cannot flag overdue again once already in Grace
+    assert!(matches!(
+        s.engine.try_flag_overdue(&id),
+        Err(Ok(e)) if e == not_overdue_err
+    ));
+
+    // Scenario 3: Inside grace period (e.g. 5 days in, grace is 14 days), liquidation must be rejected
+    s.env.ledger().set_timestamp(40 * DAY);
+    assert!(matches!(
+        s.engine.try_liquidate(&id),
+        Err(Ok(e)) if e == grace_not_expired_err
+    ));
+
+    // Scenario 4: Loan fully repaid before grace expires cannot be liquidated
+    s.ledger.attest_repayment(&s.partner, &s.verifier, &id, &10_000);
+    assert!(matches!(
+        s.ledger.get_loan(&id).unwrap().status,
+        LoanStatus::Repaid
+    ));
+
+    // Advancing past grace expiry on a repaid loan still fails liquidation
+    s.env.ledger().set_timestamp(60 * DAY);
+    assert!(matches!(
+        s.engine.try_liquidate(&id),
+        Err(Ok(e)) if e == grace_not_expired_err
+    ));
+    assert!(matches!(
+        s.engine.try_flag_overdue(&id),
+        Err(Ok(e)) if e == not_overdue_err
+    ));
+    assert!(!s.engine.poke(&id));
+}
+
