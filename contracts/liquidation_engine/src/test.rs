@@ -441,3 +441,86 @@ fn test_forfeiture_and_partial_repayment_precision() {
     assert_eq!(s.vault.get_locked(&s.guarantor), 0);
 }
 
+#[test]
+fn test_multi_guarantor_cascade_liquidation() {
+    let s = setup();
+
+    // Setup 3 distinct guarantors with deposits
+    let g1 = s.guarantor.clone();
+    let g2 = Address::generate(&s.env);
+    let g3 = Address::generate(&s.env);
+
+    // Fund g2 and g3
+    let admin = s.engine.get_admin();
+    let sac = s.vault.get_usdc_token();
+    token::StellarAssetClient::new(&s.env, &sac).mint(&g2, &100_000);
+    token::StellarAssetClient::new(&s.env, &sac).mint(&g3, &100_000);
+
+    s.vault.deposit(&g2, &100_000);
+    s.vault.deposit(&g3, &100_000);
+
+    // Beneficiaries
+    let b1 = BytesN::from_array(&s.env, &[11u8; 32]);
+    let b2 = BytesN::from_array(&s.env, &[12u8; 32]);
+    let b3 = BytesN::from_array(&s.env, &[13u8; 32]);
+    let b4 = BytesN::from_array(&s.env, &[14u8; 32]);
+    let b5 = BytesN::from_array(&s.env, &[15u8; 32]);
+
+    // Originate 5 loans across 3 guarantors:
+    // G1 has 2 loans: loan1 (repaying), loan2 (defaulting)
+    let l1 = s.ledger.originate(&g1, &b1, &s.partner, &10_000, &4, &(30 * DAY));
+    let l2 = s.ledger.originate(&g1, &b2, &s.partner, &20_000, &4, &(30 * DAY));
+
+    // G2 has 2 loans: loan3 (fully paying), loan4 (defaulting)
+    let l3 = s.ledger.originate(&g2, &b3, &s.partner, &15_000, &3, &(30 * DAY));
+    let l4 = s.ledger.originate(&g2, &b4, &s.partner, &25_000, &2, &(30 * DAY));
+
+    // G3 has 1 loan: loan5 (partial paying then defaulting)
+    let l5 = s.ledger.originate(&g3, &b5, &s.partner, &30_000, &3, &(30 * DAY));
+
+    // Initial balances and locks verified
+    assert_eq!(s.vault.get_locked(&g1), 15_000 + 30_000); // 45_000 locked
+    assert_eq!(s.vault.get_locked(&g2), 22_500 + 37_500); // 60_000 locked
+    assert_eq!(s.vault.get_locked(&g3), 45_000);
+
+    // Loan 1 and 3 repay
+    s.ledger.attest_repayment(&s.partner, &s.verifier, &l1, &10_000);
+    s.ledger.attest_repayment(&s.partner, &s.verifier, &l3, &15_000);
+    // Loan 5 repays 1 installment
+    s.ledger.attest_repayment(&s.partner, &s.verifier, &l5, &10_000);
+
+    // Loan 1 and 3 are repaid and released their collateral completely
+    assert!(matches!(s.ledger.get_loan(&l1).unwrap().status, LoanStatus::Repaid));
+    assert!(matches!(s.ledger.get_loan(&l3).unwrap().status, LoanStatus::Repaid));
+
+    // Advance time to trigger default on loan 2, 4, 5
+    s.env.ledger().set_timestamp(35 * DAY);
+    s.engine.flag_overdue(&l2);
+    s.engine.flag_overdue(&l4);
+
+    // Loan 5 was paid for first installment (due date = 60 days), so miss second installment at 65 days
+    s.env.ledger().set_timestamp(65 * DAY);
+    s.engine.flag_overdue(&l5);
+
+    // Liquidate loans after grace
+    s.env.ledger().set_timestamp(85 * DAY);
+    let f2 = s.engine.liquidate(&l2);
+    let f4 = s.engine.liquidate(&l4);
+    let f5 = s.engine.liquidate(&l5);
+
+    assert_eq!(f2, 20_000);
+    assert_eq!(f4, 25_000);
+    assert_eq!(f5, 20_000);
+
+    // Invariant check: G1, G2, G3 balances are completely preserved without cross-contamination
+    assert_eq!(s.vault.get_locked(&g1), 0);
+    assert_eq!(s.vault.get_balance(&g1), 500_000 - 20_000);
+
+    assert_eq!(s.vault.get_locked(&g2), 0);
+    assert_eq!(s.vault.get_balance(&g2), 100_000 - 25_000);
+
+    assert_eq!(s.vault.get_locked(&g3), 0);
+    assert_eq!(s.vault.get_balance(&g3), 100_000 - 20_000);
+}
+
+
