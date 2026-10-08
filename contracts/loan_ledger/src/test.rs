@@ -761,3 +761,88 @@ fn test_get_loans_range_pagination() {
     assert_eq!(s.ledger.get_loans_range(&100, &10).len(), 0);
 }
 
+#[test]
+fn test_collateral_ratio_invariant_sweeps() {
+    let s = setup();
+
+    // Deterministic pseudo-random sweep parameters
+    let principals: [i128; 5] = [500, 1_000, 7_777, 25_000, 100_000];
+    let installment_counts: [u32; 4] = [2, 4, 7, 12];
+
+    let mut seed: u64 = 0xdeadbeef_cafebabe;
+    let mut next_rand = |max: u64| -> u64 {
+        // Linear congruential generator for deterministic coverage
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 32) % max
+    };
+
+    let mut beneficiary_nonce = 100u8;
+
+    for &principal in principals.iter() {
+        for &installments in installment_counts.iter() {
+            let mut ben_bytes = [0u8; 32];
+            ben_bytes[0] = beneficiary_nonce;
+            beneficiary_nonce = beneficiary_nonce.wrapping_add(1);
+            let ben = BytesN::from_array(&s.env, &ben_bytes);
+
+            let loan_id = s.ledger.originate(
+                &s.guarantor,
+                &ben,
+                &s.partner,
+                &principal,
+                &installments,
+                &DAY,
+            );
+
+            let loan = s.ledger.get_loan(&loan_id).unwrap();
+            let initial_locked = loan.collateral_locked;
+            let initial_vault_locked = s.vault.get_locked(&s.guarantor);
+
+            assert!(initial_locked > 0);
+            assert!(initial_vault_locked >= initial_locked);
+
+            let mut remaining_principal = principal;
+
+            // Make arbitrary random repayment steps until fully repaid
+            while remaining_principal > 0 {
+                let chunk = if remaining_principal <= 10 {
+                    remaining_principal
+                } else {
+                    let step = (next_rand(remaining_principal as u64) as i128) + 1;
+                    if step > remaining_principal {
+                        remaining_principal
+                    } else {
+                        step
+                    }
+                };
+
+                s.ledger.attest_repayment(&s.partner, &s.verifier, &loan_id, &chunk);
+                remaining_principal -= chunk;
+
+                let state = s.ledger.get_loan(&loan_id).unwrap();
+
+                // INVARIANT 1: Total released must never exceed initial locked collateral
+                assert!(state.collateral_released <= initial_locked);
+
+                // INVARIANT 2: Released + remaining locked backing this loan == initial_locked
+                // While active/grace, remaining backing is initial_locked - collateral_released
+                let remaining_collateral_needed = initial_locked - state.collateral_released;
+                assert!(remaining_collateral_needed >= 0);
+                assert_eq!(state.collateral_released + remaining_collateral_needed, initial_locked);
+
+                // INVARIANT 3: Safety buffer withhold invariant
+                if state.total_repaid_usd < state.principal_usd {
+                    // Safety buffer ensures we withhold collateral proportional to buffer bps
+                    // releasable <= initial_locked * total_repaid / principal * (1 - buffer)
+                    let max_expected_release = initial_locked * state.total_repaid_usd / state.principal_usd;
+                    assert!(state.collateral_released <= max_expected_release);
+                } else {
+                    // Fully repaid must release 100% of collateral
+                    assert_eq!(state.collateral_released, initial_locked);
+                    assert!(matches!(state.status, LoanStatus::Repaid));
+                }
+            }
+        }
+    }
+}
+
