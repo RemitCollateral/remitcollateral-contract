@@ -500,6 +500,14 @@ impl GuarantorVaultContract {
     /// Persist a vault and extend its lifetime. Every mutation goes through
     /// here, so a vault holding collateral is renewed each time it is used.
     fn save(env: &Env, vault: &Vault) {
+        // Accounting invariant: locked_amount must never exceed collateral_balance,
+        // and neither may fall below zero.
+        assert!(vault.collateral_balance >= 0, "collateral_balance negative");
+        assert!(vault.locked_amount >= 0, "locked_amount negative");
+        assert!(
+            vault.collateral_balance >= vault.locked_amount,
+            "locked_amount exceeds collateral_balance"
+        );
         let key = DataKey::Vault(vault.guarantor.clone());
         env.storage().persistent().set(&key, vault);
         env.storage()
