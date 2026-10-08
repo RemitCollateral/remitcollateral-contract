@@ -403,3 +403,41 @@ fn test_negative_liquidation_scenarios() {
     assert!(!s.engine.poke(&id));
 }
 
+#[test]
+fn test_forfeiture_and_partial_repayment_precision() {
+    let s = setup();
+    // Test uneven, fractional amounts: e.g. principal 333, 3 installments of 111, uneven repayments
+    let beneficiary = BytesN::from_array(&s.env, &[88u8; 32]);
+    let id = s.ledger.originate(
+        &s.guarantor,
+        &beneficiary,
+        &s.partner,
+        &333,
+        &3,
+        &(30 * DAY),
+    );
+
+    let loan = s.ledger.get_loan(&id).unwrap();
+    // 150% LTV of 333 = 499 (333 * 15000 / 10000)
+    assert_eq!(loan.collateral_locked, 499);
+
+    // Uneven partial repayment of 111
+    let released = s.ledger.attest_repayment(&s.partner, &s.verifier, &id, &111);
+    // earned_scaled = (499 * 111) * 9500 = 526,195,500; divided by (333 * 10000) = 526195500 / 3330000 = 158
+    assert_eq!(released, 158);
+
+    // Next due was advanced by 1 installment to 60 days.
+    // Default after grace on the second installment:
+    s.env.ledger().set_timestamp(61 * DAY);
+    s.engine.flag_overdue(&id);
+    s.env.ledger().set_timestamp(80 * DAY);
+
+    let forfeited = s.engine.liquidate(&id);
+    // Outstanding principal = 333 - 111 = 222
+    // Remaining locked collateral = 499 - 158 = 341
+    // Forfeited = min(222, 341) = 222
+    assert_eq!(forfeited, 222);
+    // Returned to guarantor = 341 - 222 = 119
+    assert_eq!(s.vault.get_locked(&s.guarantor), 0);
+}
+

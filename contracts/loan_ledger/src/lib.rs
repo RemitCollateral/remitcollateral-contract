@@ -515,8 +515,8 @@ impl LoanLedgerContract {
             loan.collateral_locked
         } else {
             let config = Self::config(&env);
-            let earned = loan.collateral_locked * loan.total_repaid_usd / loan.principal_usd;
-            earned * (BPS - config.safety_buffer_bps as i128) / BPS
+            let earned_scaled = (loan.collateral_locked * loan.total_repaid_usd) * (BPS - config.safety_buffer_bps as i128);
+            earned_scaled / (loan.principal_usd * BPS)
         };
 
         let release_now = releasable - loan.collateral_released;
