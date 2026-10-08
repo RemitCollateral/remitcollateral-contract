@@ -149,6 +149,68 @@ Deployed to Stellar testnet with the production defaults, a 48-hour timelock, th
 
 Contract instances, vaults, loans, partner and verifier registrations and reputation scores are extended to about 120 days whenever they fall below about 90, on every call that uses them. Reading a loan renews it, so the engine's permissionless cranks double as a keep-alive for idle loans. Anything left entirely untouched for longer than that is archived rather than lost, and can be restored with a standard `RestoreFootprint` operation.
 
+## Interface & Error Specification
+
+### Error Code Ranges
+Standardized error code assignments prevent cross-contract collisions:
+- **`rc-guarantor-vault` (101..112)**:
+  - `101`: `NotInitialized`
+  - `102`: `NotAuthorized`
+  - `103`: `InvalidAmount`
+  - `104`: `InsufficientAvailable`
+  - `105`: `InsufficientLocked`
+  - `106`: `LedgerNotSet`
+  - `107`: `EngineNotSet`
+  - `108`: `AlreadySet`
+  - `109`: `NoPendingAction`
+  - `110`: `ActionPending`
+  - `111`: `TimelockNotExpired`
+  - `112`: `ReentrancyGuard`
+
+- **`rc-loan-ledger` (201..219)**:
+  - `201`: `NotInitialized`
+  - `202`: `NotAuthorized`
+  - `203`: `InvalidAmount`
+  - `204`: `InvalidSchedule`
+  - `205`: `InvalidConfig`
+  - `206`: `InvalidScore`
+  - `207`: `LoanNotFound`
+  - `208`: `LoanNotActive`
+  - `209`: `LoanAlreadyOpen`
+  - `210`: `NotOverdue`
+  - `211`: `GraceNotExpired`
+  - `212`: `Overpayment`
+  - `213`: `UnknownPartner`
+  - `214`: `UnknownVerifier`
+  - `215`: `RoleConflict`
+  - `216`: `AlreadySet`
+  - `217`: `NoPendingAction`
+  - `218`: `ActionPending`
+  - `219`: `TimelockNotExpired`
+
+- **`rc-liquidation-engine` (301..308)**:
+  - `301`: `NotInitialized`
+  - `302`: `NotAuthorized`
+  - `303`: `NotOverdue`
+  - `304`: `GraceNotExpired`
+  - `305`: `NoPendingAction`
+  - `306`: `ActionPending`
+  - `307`: `TimelockNotExpired`
+  - `308`: `Paused`
+
+### Events Schema
+Guarantor Vault publishes structured events on all collateral balance transitions:
+- **Topic Tuple**: `("vault", action)` where `action` is one of `deposit`, `withdraw`, `lock`, `release`, `forfeit`.
+- **Event Payload (`CollateralEvent`)**:
+  ```rust
+  pub struct CollateralEvent {
+      pub guarantor: Address,
+      pub amount: i128,
+      pub collateral_balance: i128,
+      pub locked_amount: i128,
+  }
+  ```
+
 ## Known limitations
 
 These are the protocol's remaining trust assumptions and gaps, stated plainly. They are the things to resolve, or accept knowingly, before mainnet.
@@ -156,7 +218,6 @@ These are the protocol's remaining trust assumptions and gaps, stated plainly. T
 * **A repayment still rests on two parties' word.** No single key can release collateral any more, but the loan's partner and a verifier together can, immediately, with no money having moved. Collusion between a partner and the platform, or both keys stolen, defeats it. A release delay with a dispute window would add a chance to catch that.
 * **Some admin powers are still instant.** The council can, without a timelock, register or revoke partners and verifiers, reassign a loan's partner, and change the oracle. None of these can move collateral to the council, but revoking every verifier would freeze repayments, and a new oracle can lower collateral requirements on new loans down to the floor.
 * **The multisig is a deployment choice, not a contract rule.** The contracts accept any admin address. That the admin is a 2-of-3 council is enforced by the account's own configuration, which anyone can inspect on-chain but which the contracts do not check.
-* **No events yet.** Scheduled changes and attestations are visible by reading contract state, not by subscribing to events, so monitoring the timelock means polling `get_scheduled_action`.
 * **The oracle sets collateral requirements.** A compromised oracle can push every new loan's LTV down to the 110% floor. The floor bounds the damage but does not remove it.
 * **Liquidation proceeds go to a platform-controlled address**, not through a market. Recovering the outstanding balance off-chain is outside the protocol.
 * **One grace period for every loan**, fixed when the ledger is deployed (14 days on the testnet deployment). The backend's `GRACE_PERIOD_DAYS` must match it.
