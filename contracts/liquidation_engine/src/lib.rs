@@ -28,13 +28,13 @@ const THRESHOLD: u32 = 90 * DAY_IN_LEDGERS;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    NotInitialized = 2,
-    NotAuthorized = 3,
-    NotOverdue = 4,
-    GraceNotExpired = 5,
-    NoPendingAction = 6,
-    ActionPending = 7,
-    TimelockNotExpired = 8,
+    NotInitialized = 301,
+    NotAuthorized = 302,
+    NotOverdue = 303,
+    GraceNotExpired = 304,
+    NoPendingAction = 305,
+    ActionPending = 306,
+    TimelockNotExpired = 307,
 }
 
 #[contracttype]
