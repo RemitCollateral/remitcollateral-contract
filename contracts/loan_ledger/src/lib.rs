@@ -26,6 +26,13 @@ const DAY_IN_LEDGERS: u32 = 17_280;
 const EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
 const THRESHOLD: u32 = 90 * DAY_IN_LEDGERS;
 
+/// Validation limits for loan origination parameters:
+pub const MIN_INSTALLMENTS: u32 = 1;
+pub const MAX_INSTALLMENTS: u32 = 52;
+pub const MIN_INTERVAL_SECS: u64 = 86_400; // 1 day
+pub const MAX_INTERVAL_SECS: u64 = 90 * 86_400; // 90 days
+pub const MAX_TENOR_SECS: u64 = 365 * 86_400; // 1 year (365 days)
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -386,7 +393,15 @@ impl LoanLedgerContract {
         if principal_usd <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        if installment_count == 0 || interval_secs == 0 {
+        if installment_count < MIN_INSTALLMENTS
+            || installment_count > MAX_INSTALLMENTS
+            || interval_secs < MIN_INTERVAL_SECS
+            || interval_secs > MAX_INTERVAL_SECS
+        {
+            panic_with_error!(&env, Error::InvalidSchedule);
+        }
+        let total_tenor = (installment_count as u64).saturating_mul(interval_secs);
+        if total_tenor > MAX_TENOR_SECS {
             panic_with_error!(&env, Error::InvalidSchedule);
         }
         if !Self::authorized_partner(&env, &partner) {
