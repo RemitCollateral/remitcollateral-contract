@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so a new stable release (and its new lints) cannot turn CI red on its
+  # own. Bump it deliberately, together with any fixes it needs.
+  RUST_TOOLCHAIN: 1.98.0
+
+defaults:
+  run:
+    working-directory: contracts
+
+jobs:
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+      - name: Test
+        run: cargo test --workspace
+      - name: The tests must not change the working tree
+        # The tests write their ledger snapshots to test_snapshots/. If a run
+        # changes or adds one, the committed snapshots are out of date.
+        working-directory: .
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Running the tests changed tracked or untracked files:"
+            git status --porcelain
+            git diff --stat
+            echo "Commit the updated snapshots, or fix what made them change."
+            exit 1
+          fi
+
+  wasm:
+    name: Build WASM contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+      - name: Build
+        # wasm32v1-none, not wasm32-unknown-unknown: the latter enables wasm
+        # features the Soroban VM rejects, and that only shows up at deploy time.
+        run: cargo build --target wasm32v1-none --release
+      - name: Check the artifacts
+        run: |
+          # Soroban refuses contracts over 128 KiB (131072 bytes).
+          limit=131072
+          for name in rc_guarantor_vault rc_loan_ledger rc_liquidation_engine; do
+            file="target/wasm32v1-none/release/$name.wasm"
+            test -f "$file" || { echo "missing $file"; exit 1; }
+            size=$(wc -c < "$file")
+            echo "$name.wasm: $size bytes"
+            test "$size" -le "$limit" || { echo "$name.wasm exceeds $limit bytes"; exit 1; }
+          done
+      - name: Upload the WASM files
+        uses: actions/upload-artifact@v4
+        with:
+          name: contracts-wasm
+          path: contracts/target/wasm32v1-none/release/*.wasm
+          if-no-files-found: error

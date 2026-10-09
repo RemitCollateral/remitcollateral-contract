@@ -88,6 +88,8 @@ cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+CI (`.github/workflows/ci.yml`) runs exactly these, plus the tests and a release WASM build, on every push to `main` and every pull request. It also fails if running the tests changes any file, so the committed `test_snapshots` stay current: if a test legitimately changes its snapshot, commit the new one. The Rust version is pinned in the workflow; bump it on purpose.
+
 ## Deployment
 
 Each contract takes its configuration through a constructor that runs inside its own deploy transaction, so there is no window between deployment and setup in which someone else could claim the admin role. The wiring between contracts that do not exist yet at construction time is set once, straight afterwards, and can never be changed except by a timelocked upgrade.
