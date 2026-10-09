@@ -135,14 +135,14 @@ The delay is fixed at deployment (48 hours by default) and readable from `get_ti
 
 ### Testnet
 
-Deployed to Stellar testnet with the production defaults, a 48-hour timelock, the admin role held by a 2-of-3 council, and forfeited collateral sent to that council, against a test asset issued for the purpose rather than Circle's USDC:
+Deployed to Stellar testnet with the production defaults, a 48-hour timelock, the admin role held by a 2-of-3 council, and forfeited collateral sent to that council, against Circle's testnet USDC (the asset the Circle faucet and Freighter's standard USDC trustline use):
 
 | Contract | Address |
 |----------|---------|
-| GuarantorVault | `CD6TYOKK74XIACIS423QJ2XW3Z646AMMHEAPAIZR2SWKFTRA5F3FL3QR` |
-| LoanLedger | `CDCS5WKQPSQKA65HNDT6MS3OFS36VCZDMBJZ575REFDZCSABEUQFQSIL` |
-| LiquidationEngine | `CC25FFHO6CFCBZPV5J7IJV4LJWDIN2X2LIELKBBBZBAYQV42CKXWC4NU` |
-| Test USDC (SAC) | `CAWDARLC5JRSXG52Q6RWJJZ5YNEI3KJJOGVNQHEFAEQMESGPXRFCSHI4` |
+| GuarantorVault | `CBTD4XTWHWWZGIR73YEABQ27VAFPM2F2VD2HAUVQL4GBG72UQAUDYCCV` |
+| LoanLedger | `CCQNUDRVK7WPQZP2ISTSBMPTGBT2VNULEPFHCSLUCVLVINW5T6LSVR2V` |
+| LiquidationEngine | `CBKBE27LZRCV6CXJPGGO5M373XMVMX3EUABD7JN6C764DZNRMJNRCJKE` |
+| USDC (Circle testnet SAC, issuer `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`) | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
 | Admin council (2-of-3) | `GAFDAOJ6UE3VIJ43W6WEW6D6T3MVDE5PISA74AS7AEIJE4KURQAJ7VMT` |
 
 These contracts are live and in use. The deployed services that read and write them:
@@ -155,10 +155,12 @@ These contracts are live and in use. The deployed services that read and write t
 You can check the deployment yourself without any of those services:
 
 ```bash
-stellar contract invoke --id CD6TYOKK74XIACIS423QJ2XW3Z646AMMHEAPAIZR2SWKFTRA5F3FL3QR \
+stellar contract invoke --id CBTD4XTWHWWZGIR73YEABQ27VAFPM2F2VD2HAUVQL4GBG72UQAUDYCCV \
   --source-account <any funded identity> --network testnet -- get_admin
 # "GAFDAOJ6UE3VIJ43W6WEW6D6T3MVDE5PISA74AS7AEIJE4KURQAJ7VMT"
 ```
+
+The vault's token is fixed at construction, so a deployment accepts exactly one asset. `get_usdc_token` on the vault returns the SAC above; a wallet holding a different asset named USDC cannot deposit into it.
 
 ### Storage lifetimes
 
