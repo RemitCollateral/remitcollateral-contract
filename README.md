@@ -145,6 +145,21 @@ Deployed to Stellar testnet with the production defaults, a 48-hour timelock, th
 | Test USDC (SAC) | `CAWDARLC5JRSXG52Q6RWJJZ5YNEI3KJJOGVNQHEFAEQMESGPXRFCSHI4` |
 | Admin council (2-of-3) | `GAFDAOJ6UE3VIJ43W6WEW6D6T3MVDE5PISA74AS7AEIJE4KURQAJ7VMT` |
 
+These contracts are live and in use. The deployed services that read and write them:
+
+| Service | URL |
+|---------|-----|
+| Backend ([remitcollateral-backend](https://github.com/RemitCollateral/remitcollateral-backend)) | <https://remitcollateral-backend-production.up.railway.app> — `/api/v1/chain` reports `enabled: true` when it is connected to the three contracts above |
+| Frontend ([remitcollateral-frontend](https://github.com/RemitCollateral/remitcollateral-frontend)) | <https://remitcollateral-frontend.vercel.app> |
+
+You can check the deployment yourself without any of those services:
+
+```bash
+stellar contract invoke --id CD6TYOKK74XIACIS423QJ2XW3Z646AMMHEAPAIZR2SWKFTRA5F3FL3QR \
+  --source-account <any funded identity> --network testnet -- get_admin
+# "GAFDAOJ6UE3VIJ43W6WEW6D6T3MVDE5PISA74AS7AEIJE4KURQAJ7VMT"
+```
+
 ### Storage lifetimes
 
 Contract instances, vaults, loans, partner and verifier registrations and reputation scores are extended to about 120 days whenever they fall below about 90, on every call that uses them. Reading a loan renews it, so the engine's permissionless cranks double as a keep-alive for idle loans. Anything left entirely untouched for longer than that is archived rather than lost, and can be restored with a standard `RestoreFootprint` operation.
