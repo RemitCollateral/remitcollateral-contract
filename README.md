@@ -150,7 +150,7 @@ These contracts are live and in use. The deployed services that read and write t
 | Service | URL |
 |---------|-----|
 | Backend ([remitcollateral-backend](https://github.com/RemitCollateral/remitcollateral-backend)) | <https://remitcollateral-backend-production.up.railway.app> — `/api/v1/chain` reports `enabled: true` when it is connected to the three contracts above |
-| Frontend ([remitcollateral-frontend](https://github.com/RemitCollateral/remitcollateral-frontend)) | <https://remitcollateral-frontend.vercel.app> |
+| Frontend ([remitcollateral-frontend](https://github.com/RemitCollateral/remitcollateral-frontend)) | <https://remitcollateral-frontend-alpha.vercel.app> |
 
 You can check the deployment yourself without any of those services:
 
