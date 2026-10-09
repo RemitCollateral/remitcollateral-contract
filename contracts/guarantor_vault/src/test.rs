@@ -319,13 +319,12 @@ fn test_reentrancy_guard_blocks_nested_calls() {
     let reentrancy_error = soroban_sdk::Error::from(Error::ReentrancyGuard);
 
     // Simulate an ongoing call holding the reentrancy lock
-    s.env
-        .as_contract(&s.vault.address, || {
-            s.env
-                .storage()
-                .instance()
-                .set(&crate::DataKey::ReentrancyLock, &true);
-        });
+    s.env.as_contract(&s.vault.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&crate::DataKey::ReentrancyLock, &true);
+    });
 
     // Any attempt to re-enter a protected method is rejected
     assert!(matches!(
@@ -350,13 +349,12 @@ fn test_reentrancy_guard_blocks_nested_calls() {
     ));
 
     // Clearing the lock allows normal operations again
-    s.env
-        .as_contract(&s.vault.address, || {
-            s.env
-                .storage()
-                .instance()
-                .remove(&crate::DataKey::ReentrancyLock);
-        });
+    s.env.as_contract(&s.vault.address, || {
+        s.env
+            .storage()
+            .instance()
+            .remove(&crate::DataKey::ReentrancyLock);
+    });
 
     assert!(s.vault.try_deposit(&s.guarantor, &100).is_ok());
 }
@@ -459,5 +457,3 @@ fn test_two_step_timelocked_upgrade_execution() {
         Err(Ok(e)) if e == too_early
     ));
 }
-
-

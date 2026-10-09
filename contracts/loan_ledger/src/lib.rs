@@ -393,10 +393,8 @@ impl LoanLedgerContract {
         if principal_usd <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        if installment_count < MIN_INSTALLMENTS
-            || installment_count > MAX_INSTALLMENTS
-            || interval_secs < MIN_INTERVAL_SECS
-            || interval_secs > MAX_INTERVAL_SECS
+        if !(MIN_INSTALLMENTS..=MAX_INSTALLMENTS).contains(&installment_count)
+            || !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&interval_secs)
         {
             panic_with_error!(&env, Error::InvalidSchedule);
         }
@@ -515,7 +513,8 @@ impl LoanLedgerContract {
             loan.collateral_locked
         } else {
             let config = Self::config(&env);
-            let earned_scaled = (loan.collateral_locked * loan.total_repaid_usd) * (BPS - config.safety_buffer_bps as i128);
+            let earned_scaled = (loan.collateral_locked * loan.total_repaid_usd)
+                * (BPS - config.safety_buffer_bps as i128);
             earned_scaled / (loan.principal_usd * BPS)
         };
 

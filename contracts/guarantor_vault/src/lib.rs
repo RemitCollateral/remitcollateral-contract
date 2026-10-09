@@ -92,7 +92,9 @@ impl<'a> ReentrancyGuard<'a> {
         if env.storage().instance().has(&DataKey::ReentrancyLock) {
             panic_with_error!(env, Error::ReentrancyGuard);
         }
-        env.storage().instance().set(&DataKey::ReentrancyLock, &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyLock, &true);
         Self(env)
     }
 }
@@ -487,14 +489,11 @@ impl GuarantorVaultContract {
                 .persistent()
                 .extend_ttl(&key, THRESHOLD, EXTEND_TO);
         }
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vault {
-                guarantor: guarantor.clone(),
-                collateral_balance: 0,
-                locked_amount: 0,
-            })
+        env.storage().persistent().get(&key).unwrap_or(Vault {
+            guarantor: guarantor.clone(),
+            collateral_balance: 0,
+            locked_amount: 0,
+        })
     }
 
     /// Persist a vault and extend its lifetime. Every mutation goes through

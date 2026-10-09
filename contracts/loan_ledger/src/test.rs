@@ -738,9 +738,15 @@ fn test_get_loans_range_pagination() {
     let b2 = BytesN::from_array(&s.env, &[2u8; 32]);
     let b3 = BytesN::from_array(&s.env, &[3u8; 32]);
 
-    let id1 = s.ledger.originate(&s.guarantor, &b1, &s.partner, &1_000, &2, &DAY);
-    let id2 = s.ledger.originate(&s.guarantor, &b2, &s.partner, &2_000, &2, &DAY);
-    let id3 = s.ledger.originate(&s.guarantor, &b3, &s.partner, &3_000, &2, &DAY);
+    let id1 = s
+        .ledger
+        .originate(&s.guarantor, &b1, &s.partner, &1_000, &2, &DAY);
+    let id2 = s
+        .ledger
+        .originate(&s.guarantor, &b2, &s.partner, &2_000, &2, &DAY);
+    let id3 = s
+        .ledger
+        .originate(&s.guarantor, &b3, &s.partner, &3_000, &2, &DAY);
 
     assert_eq!(s.ledger.get_loan_count(), 3);
 
@@ -772,7 +778,9 @@ fn test_collateral_ratio_invariant_sweeps() {
     let mut seed: u64 = 0xdeadbeef_cafebabe;
     let mut next_rand = |max: u64| -> u64 {
         // Linear congruential generator for deterministic coverage
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (seed >> 32) % max
     };
 
@@ -816,7 +824,8 @@ fn test_collateral_ratio_invariant_sweeps() {
                     }
                 };
 
-                s.ledger.attest_repayment(&s.partner, &s.verifier, &loan_id, &chunk);
+                s.ledger
+                    .attest_repayment(&s.partner, &s.verifier, &loan_id, &chunk);
                 remaining_principal -= chunk;
 
                 let state = s.ledger.get_loan(&loan_id).unwrap();
@@ -828,13 +837,17 @@ fn test_collateral_ratio_invariant_sweeps() {
                 // While active/grace, remaining backing is initial_locked - collateral_released
                 let remaining_collateral_needed = initial_locked - state.collateral_released;
                 assert!(remaining_collateral_needed >= 0);
-                assert_eq!(state.collateral_released + remaining_collateral_needed, initial_locked);
+                assert_eq!(
+                    state.collateral_released + remaining_collateral_needed,
+                    initial_locked
+                );
 
                 // INVARIANT 3: Safety buffer withhold invariant
                 if state.total_repaid_usd < state.principal_usd {
                     // Safety buffer ensures we withhold collateral proportional to buffer bps
                     // releasable <= initial_locked * total_repaid / principal * (1 - buffer)
-                    let max_expected_release = initial_locked * state.total_repaid_usd / state.principal_usd;
+                    let max_expected_release =
+                        initial_locked * state.total_repaid_usd / state.principal_usd;
                     assert!(state.collateral_released <= max_expected_release);
                 } else {
                     // Fully repaid must release 100% of collateral
@@ -888,7 +901,8 @@ fn test_loan_parameter_bounds() {
 
     // Valid parameters (e.g. 52 weekly installments = 364 days tenor) succeeds
     let b6 = BytesN::from_array(&s.env, &[26u8; 32]);
-    let id = s.ledger.originate(&s.guarantor, &b6, &s.partner, &1_000, &52, &(7 * DAY));
+    let id = s
+        .ledger
+        .originate(&s.guarantor, &b6, &s.partner, &1_000, &52, &(7 * DAY));
     assert!(id > 0);
 }
-
